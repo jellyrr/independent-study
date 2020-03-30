@@ -1,9 +1,9 @@
 # mod_ccn
 # version : 
-# 20200330 main_v0 : setting target and build structure 
+# 20200330 main_v0   : setting target and build structure 
+# 20200330 main_v0.1 : testing => read calibration data with time stamp
+# 20200330 main_v0.2 : testing => read discontinue ccn data
 
-# start   	: 20200118
-# update  	: 20200211
 # new	  	: 
 # structure : rea_ccn_calib
 # target 	: 
@@ -15,9 +15,8 @@
 
 print('\nprogram : mod_ccn')
 print('version : \n')
-import time as tm
-start = tm.time()
-import datetime as dtm
+from datetime import datetime as dtm
+start = dtm.now().timestamp()
 import func as fc
 
 
@@ -53,20 +52,22 @@ import func as fc
 
 # calibration
 ## parameter
-start_dtm = dtm.datetime(2017,12,25,18,20,1)
-final_dtm = dtm.datetime(2017,12,25,21,20,0)
-path_ccn = r'../171225_cal/ccn/'
-path_cpc = r'../171225_cal/cpc/'
-path_dma = r'../171225_cal/dma/'
+start_dtm = dtm(2018,12,1,15,0,1)
+final_dtm = dtm(2018,12,1,16,59,59)
+path_ccn = r'test/msrt/'
+path_cpc = r'test/calib/CPC/'
+path_dma = r'test/calib/DMA/'
 
 ## data
 read = fc.reader(start_dtm,final_dtm,path_ccn=path_ccn,path_cpc=path_cpc,path_dma=path_dma)
-data = read.modi_ccndata_calib()
+# data = read.modi_ccndata_calib()
+ccn = read.ccn_raw() 
+print(ccn)
 
 ## plot
-cal = fc.calibration(data,date=start_dtm.strftime('%Y/%m/%d'))
-cal.S_curve(plot_dc=True)
-cal.calib_line()
+# cal = fc.calibration(data,date=start_dtm.strftime('%Y/%m/%d'))
+# cal.S_curve(plot_dc=True)
+# cal.calib_line()
 
 # measurement
 
@@ -78,7 +79,7 @@ from PIL import Image
 Image.open('picture/rea_calib_scurve.png').show()
 #'''
 
-
+ 
 
 
 
@@ -89,6 +90,6 @@ Image.open('picture/rea_calib_scurve.png').show()
 
 #=============================================================================
 if __name__ == '__main__':
-	final = tm.time()
-	time = (final-start)/60.
-	print('\nrunning time = ',int(time),' min','{:6.3f}'.format((time-int(time))*60.),' s')
+	final = dtm.now().timestamp()
+	runtime = (final-start)/60.
+	print('\nrunning time = {:3d} min {:6.3f} s'.format(int(runtime),(runtime-int(runtime))*60.))
