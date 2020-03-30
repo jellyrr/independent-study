@@ -1,9 +1,11 @@
 # func of mod_ccn
 # version : 
-# 20200330 main_v0 : build structure and setting target
+# 20200330 main_v0   : setting target and build structure
+# 20200330 main_v0.2 : add file name identify, nan data with discontinue data, data collect from chosen start time
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
+# 	method : use time stamp -> test by calibraion data
 # 1. calibration and measurement data process:
 # 	(1) calibration : deal with time due to the data may be unstable in first 4 min by CCNc,
 #		then DMA changes diameter every 2 min, however, first and last 30s 
@@ -16,6 +18,8 @@ import os
 import numpy as n
 import scipy.stats as st
 import matplotlib.pyplot as pl
+from datetime import datetime as dtm
+from datetime import timedelta as dtmdt
 
 # file reader
 class reader:
@@ -32,9 +36,10 @@ class reader:
 		## set class parameter
 		self.start = start ## datetime object
 		self.final = final ## datetime object
-		self.path_ccn = default['path_ccn']
-		self.path_dma = default['path_dma']
-		self.path_cpc = default['path_cpc']
+		self.kil_date  = lambda time: dtm.strptime(dtm.strftime(time,'%X'),'%X')
+		self.path_ccn  = default['path_ccn']
+		self.path_dma  = default['path_dma']
+		self.path_cpc  = default['path_cpc']
 		self.path_smps = default['path_smps']
 		
 	## SMPS
@@ -52,27 +57,43 @@ class reader:
 					switch = False
 				else: [ f.readline() for i in range(16) ]
 				[ fout.append(n.array(line[:-1].split('\t'))) for line in f ]
-		raw_data = dict(zip(header,n.array(fout).T))
-		return raw_data
+		return dict(zip(header,n.array(fout).T))
 
 	## CCNc	
 	## name : CCN 100 data %y%m%d%M0000.csv
 	## change time every second
 	## keys index : '    Time' : 0 (%X)
 	## 				' CCN Number Conc' : 45
+	## 
 	def ccn_raw(self):
-		path, fout, switch= self.path_ccn, [], True
+		path, fout, delT, tm_start = self.path_ccn, [], dtmdt(seconds=1.), self.start
+		switch, begin = True, True
 		for file in os.listdir(path):
+			if '.csv' not in file: continue
 			with open(path+file,errors='replace') as f:
-				if switch==True:
+				## get header and skip instrument information
+				if switch:
 					[ f.readline() for i in range(4) ]
 					header = f.readline()[:-1].split(',')[:-1]
 					f.readline()
 					switch = False
 				else: [ f.readline() for i in range(6) ]
-				[ fout.append(n.array(line[:-1].split(','))) for line in f ]
-		raw_data = dict(zip(header,n.array(fout).T))
-		return raw_data
+				## collect data from start time, and make nan array for discontinue data
+				for line in f:
+					if begin: 
+						begin = True if line[0:8] != dtm.strftime(tm_start,'%X') else False
+						if begin: continue 
+
+					while line[0:8] != dtm.strftime(tm_start,'%X'):
+						fout.append(n.array([dtm.strftime(tm_start,'%X')]+[n.nan]*len(header[1::])))
+						tm_start += delT
+					
+					## data colllect
+					fout.append(n.array(line[:-1].split(',')))
+					tm_start += delT
+		return dict(zip(header,n.array(fout).T))
+		 
+		 
 	
 	## DMA
 	## name : %Y%m%d.txt
@@ -84,10 +105,11 @@ class reader:
 		path, fout = self.path_dma, []
 		header = ['Date','Time','Diameter','SPD']
 		for file in os.listdir(path):
+			if '.txt' not in file: continue
 			with open(path+file,errors='replace') as f:
 				[ fout.append(n.array(line[:-1].split('\t'))) for line in f ]
-		raw_data = dict(zip(header,n.array(fout).T))
-		return raw_data
+
+		return dict(zip(header,n.array(fout).T))
 
 	## CPC
 	## name : %y%m%d_cpc.csv
@@ -97,6 +119,7 @@ class reader:
 	def cpc_raw(self):
 		path, fout, switch= self.path_cpc, [], True
 		for file in os.listdir(path):
+			if '.csv' not in file: continue
 			with open(path+file,errors='replace') as f:
 				if switch==True:
 					[ f.readline() for i in range(17) ]
@@ -104,8 +127,8 @@ class reader:
 					switch = False
 				else: [ f.readline() for i in range(18) ]
 				[ fout.append(n.array(line[:-1].split(',')[:-1])) for line in f ]
-		raw_data = dict(zip(header,n.array(fout[:-5]).T))
-		return raw_data
+
+		return dict(zip(header,n.array(fout[:-5]).T))
 
 	## data for CCNc calibration
 	## use data of CCNc, DMA, CPC, and modified by time
@@ -127,7 +150,7 @@ class reader:
 		## < uns  >< ch >< ch >.....< ch >	  	   	 <uns>< st ><uns>
 		## <            30 min           > 	   	   	 <    2 min     >
 		## stable(st), unstable(uns), diameter change(ch)
-		## 30min = 1800s, 4min 30s = 270s, 4min 90s = 330s, 2min = 120
+		## 30min = 1800s, 4min 30s = 270s, 4min 90s = 330s, 2min = 120s
 		## (30-4)/2 = 13 different diameter
 	
 		for i in range(0,len(time_ccn),1800):
