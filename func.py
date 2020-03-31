@@ -2,7 +2,8 @@
 # version : 
 # 20200330 main_v0   : setting target and build structure
 # 20200330 main_v0.2 : add file name identify, nan data with discontinue data, data collect from chosen start time
-# 20200330 main_v0.3 : replace time when same time at diff. row
+# 20200331 main_v0.3 : replace time when same time at diff. row
+# 20200331 main_v0.4 : alarm code sensor
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -103,9 +104,7 @@ class reader:
 		raw_dt = dict(zip(header,n.array(fout).T))
 		raw_dt[' Alarm Code'][raw_dt[' Alarm Code']!='    0.00'] = 'nan'
 		return raw_dt
-		 
-		 
-	
+
 	## DMA
 	## name : %Y%m%d.txt
 	## change time every second
