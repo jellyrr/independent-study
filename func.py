@@ -2,6 +2,7 @@
 # version : 
 # 20200330 main_v0   : setting target and build structure
 # 20200330 main_v0.2 : add file name identify, nan data with discontinue data, data collect from chosen start time
+# 20200330 main_v0.3 : replace time when same time at diff. row
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -80,18 +81,28 @@ class reader:
 				else: [ f.readline() for i in range(6) ]
 				## collect data from start time, and make nan array for discontinue data
 				for line in f:
+					# print(dtm.strftime(tm_start,'%X'))
 					if begin: 
 						begin = True if line[0:8] != dtm.strftime(tm_start,'%X') else False
-						if begin: continue 
+						if begin: continue
+					# print(dtm.strftime(tm_start,'%X'),'  ',line[0:8],'  normal')
+					## line[0:8] is time
+					if ((line[0:8] == dtm.strftime(tm_start+delT,'%X'))|(line[0:8] == dtm.strftime(tm_start+delT,'%X'))): 
+						line = line.replace(line[0:8],dtm.strftime(tm_start,'%X'))
+						# print(dtm.strftime(tm_start,'%X'),'  ',line[0:8],'  replace')
+						# input()
 
 					while line[0:8] != dtm.strftime(tm_start,'%X'):
 						fout.append(n.array([dtm.strftime(tm_start,'%X')]+[n.nan]*len(header[1::])))
-						tm_start += delT
-					
+						# print(dtm.strftime(tm_start,'%X'),'  ',line[0:8],'  nan')
+						
 					## data colllect
 					fout.append(n.array(line[:-1].split(',')))
 					tm_start += delT
-		return dict(zip(header,n.array(fout).T))
+		## alarm code
+		raw_dt = dict(zip(header,n.array(fout).T))
+		raw_dt[' Alarm Code'][raw_dt[' Alarm Code']!='    0.00'] = 'nan'
+		return raw_dt
 		 
 		 
 	
@@ -220,7 +231,7 @@ class calibration:
 				   'mfc'	  	: '#7fdfff', 
 				   'mec'	  	: '#297db7', 
 				   'order' 		: [ i-1 for i in range(self.size) ], ## order of axes
-				   'fig_name' 	: r'picture/rea_calib_scurve.png'}
+				   'fig_name' 	: r'calib_Scurve.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -268,9 +279,12 @@ class calibration:
 	## with CCNc's SS
 	def calib_line(self,**kwarg):
 		## set plotting parameter
-		default = {'color'	    : '#008c69', 
+		default = {'mec'	    : '#00b386', 
+				   'mfc'		: '#ffffff', 
+				   'ms'			: 6., 
+				   'mew'		: 1.8, 
 				   'line_color'	: '#ff5f60', 
-				   'fig_name'   : r'picture/rea_calib_line.png'}
+				   'fig_name'   : r'calib_RegreLine.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -290,14 +304,14 @@ class calibration:
 		line_y = line_coe[0]*line_x+line_coe[1]
 		
 		ax.plot(line_x,line_y, c=default['line_color'],ls='--')
-		ax.scatter(SS_[0],SS_[1],c=default['color'],marker='o')
+		ax.plot(SS_[0],SS_[1],mec=default['mec'],mew=default['mew'],mfc=default['mfc'],ms=default['ms'],marker='o',ls='')
 		
 		ax.tick_params(which='both',direction='in',labelsize=fs,right=True,top=True)
 		ax.set(xlim=(.05,.75),ylim=(.05,.95))
 		
 		ax.set_xlabel('CCNc SS (%)',fontsize=fs)
 		ax.set_ylabel('Calibration SS (%)',fontsize=fs)
-		ax.set_title('y = {:.1f}x {:+.3f}'.format(line_coe[0],line_coe[1]),fontsize=fs)
+		ax.set_title('y = {:.1f}x {:+.3f} ; $R^2$ = {:.4f}'.format(line_coe[0],line_coe[1],line_coe[2]),fontsize=fs)
 			
 		fig.suptitle('Calibration Line of Supersaturation (Date : {:})'.format(self.date),
 					 fontsize=fs+3,style='italic')	
