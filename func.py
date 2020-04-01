@@ -4,6 +4,7 @@
 # 20200330 main_v0.2 : add file name identify, nan data with discontinue data, data collect from chosen start time
 # 20200331 main_v0.3 : replace time when same time at diff. row
 # 20200331 main_v0.4 : alarm code sensor
+# 20200401 main_v0.5 : calib_SS : add table on figure
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -200,7 +201,7 @@ class calibration:
 	def calib_data(self,SS,get_dc=True,kohler_calib=False):
 		d_ = self.data[SS][0] ## diameter
 		activation = (self.data[SS][1]/self.data[SS][2])*100. ## CCN/CPC
-		if get_dc==True: 
+		if get_dc: 
 			## data for S curve and regression line of activation changing
 			line_bottom = n.where((activation-activation.min())<10.)[0][-1]
 			line_top = n.where((100.-activation)<10.)[0][0]
@@ -215,7 +216,7 @@ class calibration:
 						'line_data' : [line_x,line_y],
 						'dc' : dc}
 			else:
-				## data for calibration line, which calibrating by kappa Kohler equation
+				## data for calibration SS, which calibrating by kappa Kohler equation
 				SS_calib = lambda dc_ : n.exp((4.*self.coe_A**3./(27.*self.kappa*dc_**3.))**.5)*100.-100.
 				return n.array([float(SS),SS_calib(dc)])
 		else:
@@ -276,50 +277,50 @@ class calibration:
 
 	## use kappa kohler eq. and modified data to calculate the SS, then plotting regression line
 	## with CCNc's SS
-	def calib_line(self,**kwarg):
+	def calib_SS(self,**kwarg):
 		## set plotting parameter
 		default = {'mec'	    : '#00b386', 
 				   'mfc'		: '#ffffff', 
 				   'ms'			: 6., 
 				   'mew'		: 1.8, 
-				   'line_color'	: '#ff5f60', 
-				   'fig_name'   : r'calib_RegreLine.png'}
+				   'fig_name'   : r'calib_CalibTable.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
 
 		## parameter
 		fs, SS_ = self.fs, []
+		height = .15
 
 		## plot
 		fig, ax = pl.subplots(figsize=(8,6),dpi=200)
+		box = ax.get_position()
+		ax.set_position([box.x0,box.y0+.03,box.width,box.height*.95])
+
 		for SS in self.data.keys():
 			SS_.append(self.calib_data(SS,kohler_calib=True))
 		SS_ = n.array(SS_).T
 		SS_.sort()
 		
-		line_coe = st.linregress(SS_[0],SS_[1])
-		line_x = n.array([SS_[0][0],SS_[0][-1]])
-		line_y = line_coe[0]*line_x+line_coe[1]
+		## plot 6 calibration data, to align with table, x data use index data
+		ax.plot(n.arange(.1,.7,.1),SS_[1],mec=default['mec'],mew=default['mew'],mfc=default['mfc'],ms=default['ms'],marker='o',ls='')
+		table = ax.table(cellText=[list(n.round(SS_[1],3))],rowLabels=['Calib SS'],colLabels=list(SS_[0]),
+						 cellLoc='center',rowLoc='center',colLoc='center',
+						 bbox=[0.,-height,1.,height])
+		table.auto_set_font_size(False)
+		table.set_fontsize(self.fs)
+	
+		ax.tick_params(which='both',direction='in',labelsize=fs,right=True,top=True,labelbottom=False)
+		ax.set(xlim=(.05,.65),ylim=(.05,.95))
 		
-		ax.plot(line_x,line_y, c=default['line_color'],ls='--')
-		ax.plot(SS_[0],SS_[1],mec=default['mec'],mew=default['mew'],mfc=default['mfc'],ms=default['ms'],marker='o',ls='')
-		
-		ax.tick_params(which='both',direction='in',labelsize=fs,right=True,top=True)
-		ax.set(xlim=(.05,.75),ylim=(.05,.95))
-		
-		ax.set_xlabel('CCNc SS (%)',fontsize=fs)
+		# ax.set_xlabel('CCNc SS (%)',fontsize=fs)
 		ax.set_ylabel('Calibration SS (%)',fontsize=fs)
-		ax.set_title('y = {:.1f}x {:+.3f} ; $R^2$ = {:.4f}'.format(line_coe[0],line_coe[1],line_coe[2]),fontsize=fs)
+		ax.set_title('CCNc SS (%)',fontsize=fs)
 			
 		fig.suptitle('Calibration Line of Supersaturation (Date : {:})'.format(self.date),
-					 fontsize=fs+3,style='italic')	
+					 fontsize=fs+3,style='italic')
 		fig.savefig(default['fig_name'])
 		pl.close()
-
-
-
-
 
 
 
