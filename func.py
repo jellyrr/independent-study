@@ -5,6 +5,7 @@
 # 20200331 main_v0.3 : replace time when same time at diff. row
 # 20200331 main_v0.4 : alarm code sensor
 # 20200401 main_v0.5 : calib_SS : add table on figure
+# 20200402 main_v0.6 : calibration : add figure path
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -180,10 +181,11 @@ class reader:
 class calibration:
 	def __init__(self,data,date,**kwarg):
 		## set calculating parameter
-		default = {'kappa'	 : .61, 
-				   'inst_T'  : 299.15, ## lab temperature [K]
-				   'rho_w_T' : 997., 
-				   'sig_wa'	 : .072}
+		default = {'kappa'	  : .61, 
+				   'inst_T'   : 299.15, ## lab temperature [K]
+				   'rho_w_T'  : 997., 
+				   'fig_Path' : './',
+				   'sig_wa'	  : .072}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -195,7 +197,8 @@ class calibration:
 		self.date = date
 		self.kappa = default['kappa']
 		self.coe_A = 4.*default['sig_wa']/(461.*default['inst_T']*default['rho_w_T'])*1e9 ## diameter [nm]
-	
+		self.figPath = default['fig_Path']
+		
 	## activation of CCN may be like a S curve, there is a very sharp activation changing which variety
 	## by diameter
 	def calib_data(self,SS,get_dc=True,kohler_calib=False):
@@ -231,7 +234,7 @@ class calibration:
 				   'mfc'	  	: '#7fdfff', 
 				   'mec'	  	: '#297db7', 
 				   'order' 		: [ i-1 for i in range(self.size) ], ## order of axes
-				   'fig_name' 	: r'calib_Scurve.png'}
+				   'fig_name' 	: self.figPath+r'calib_Scurve.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -283,7 +286,7 @@ class calibration:
 				   'mfc'		: '#ffffff', 
 				   'ms'			: 6., 
 				   'mew'		: 1.8, 
-				   'fig_name'   : r'calib_CalibTable.png'}
+				   'fig_name'   : self.figPath+r'calib_CalibTable.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
