@@ -6,6 +6,7 @@
 # 20200331 main_v0.4 : alarm code sensor
 # 20200401 main_v0.5 : calib_SS : add table on figure
 # 20200402 main_v0.6 : calibration : add figure path
+# 20200404 main_v0.7 : read smps data completely, add function of checkout time
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -46,21 +47,65 @@ class reader:
 		self.path_cpc  = default['path_cpc']
 		self.path_smps = default['path_smps']
 		
+	## data of corrected time
+	## start test
+	## wrong current time test	
+	## discountinue data test
+	## output data
+	def correct_time_data(self,_begin_,_fout_,_line,dt_splt,tm_indx,err_tm,del_tm,tm_start,nan_dt):
+		## raw data
+		_data_ = dt_splt(_line)
+		cur_tm = _data_[tm_indx]
+
+		## start test
+		if _begin_: 
+			_begin_ = True if cur_tm != dtm.strftime(tm_start,'%X') else False
+			if _begin_: return tm_start, _begin_
+
+		## wrong current time test
+		## check out data time series by current time +/- error time
+		if ((cur_tm == dtm.strftime(tm_start-err_tm,'%X'))|(cur_tm == dtm.strftime(tm_start+err_tm,'%X'))): 
+			cur_tm = dtm.strftime(tm_start,'%X')
+
+		## discountinue data test
+		while cur_tm != dtm.strftime(tm_start,'%X'):
+			_fout_.append(nan_dt(tm_start))
+			tm_start += del_tm
+
+		## data colllect
+		_fout_.append(_data_)
+		tm_start += del_tm
+		return tm_start, _begin_
+
 	## SMPS
 	## change time every 5 min
 	## keys index : 'Date' : 1 (%D)
 	## 				'Start Time' : 2 (%X)
 	## 				'diameter' : 4~110
 	def smps_raw(self):
-		path, fout, switch= self.path_smps, [], True
+		path, fout, switch, begin = self.path_smps, [], True, True
+
 		for file in os.listdir(path):
+			if '.txt' not in file: continue
 			with open(path+file,errors='replace') as f:
+				## get header and skip instrument information
 				if switch==True:
 					[ f.readline() for i in range(15) ]
 					header = f.readline()[:-1].split('\t')
 					switch = False
 				else: [ f.readline() for i in range(16) ]
-				[ fout.append(n.array(line[:-1].split('\t'))) for line in f ]
+
+				## collect data from start time, and make nan array for discontinue data
+				## [2] is current time index
+				delTm, errTm, tmStart = dtmdt(minutes=5.), dtmdt(seconds=1.), self.start
+				nanDt  = lambda _tmStart: n.array(['nan']*2+[dtm.strftime(_tmStart,'%X')]+['nan']*len(header[3::]))
+				dtSplt = lambda _li: n.array(_li[:-1].split('\t'))
+				tmIndx = 2
+
+				for line in f:
+					## time check out and collect data
+					tmStart, begin = self.correct_time_data(begin,fout,line,dtSplt,tmIndx,errTm,delTm,tmStart,nanDt)
+
 		return dict(zip(header,n.array(fout).T))
 
 	## CCNc	
@@ -68,10 +113,9 @@ class reader:
 	## change time every second
 	## keys index : '    Time' : 0 (%X)
 	## 				' CCN Number Conc' : 45
-	## 
 	def ccn_raw(self):
-		path, fout, delT, tm_start = self.path_ccn, [], dtmdt(seconds=1.), self.start
-		switch, begin = True, True
+		path, fout, switch, begin = self.path_ccn, [], True, True
+
 		for file in os.listdir(path):
 			if '.csv' not in file: continue
 			with open(path+file,errors='replace') as f:
@@ -82,29 +126,22 @@ class reader:
 					f.readline()
 					switch = False
 				else: [ f.readline() for i in range(6) ]
-				## collect data from start time, and make nan array for discontinue data
-				for line in f:
-					# print(dtm.strftime(tm_start,'%X'))
-					if begin: 
-						begin = True if line[0:8] != dtm.strftime(tm_start,'%X') else False
-						if begin: continue
-					# print(dtm.strftime(tm_start,'%X'),'  ',line[0:8],'  normal')
-					## line[0:8] is time
-					if ((line[0:8] == dtm.strftime(tm_start+delT,'%X'))|(line[0:8] == dtm.strftime(tm_start+delT,'%X'))): 
-						line = line.replace(line[0:8],dtm.strftime(tm_start,'%X'))
-						# print(dtm.strftime(tm_start,'%X'),'  ',line[0:8],'  replace')
-						# input()
 
-					while line[0:8] != dtm.strftime(tm_start,'%X'):
-						fout.append(n.array([dtm.strftime(tm_start,'%X')]+[n.nan]*len(header[1::])))
-						# print(dtm.strftime(tm_start,'%X'),'  ',line[0:8],'  nan')
-						
-					## data colllect
-					fout.append(n.array(line[:-1].split(',')))
-					tm_start += delT
+				## collect data from start time, and make nan array for discontinue data
+				## line[0:8] is current time
+				delTm, errTm, tmStart = dtmdt(seconds=1.), dtmdt(seconds=1.), self.start
+				nanDt = lambda _tmStart: n.array([dtm.strftime(_tmStart,'%X')]+['nan']*len(header[1::]))
+				dtSplt = lambda _li: n.array(_li[:-1].split(','))
+				tmIndx = 0
+
+				for line in f:
+					## check out time and collect data
+					tmStart, begin = self.correct_time_data(begin,fout,line,dtSplt,tmIndx,errTm,delTm,tmStart,nanDt)
+
 		## alarm code
 		raw_dt = dict(zip(header,n.array(fout).T))
-		raw_dt[' Alarm Code'][raw_dt[' Alarm Code']!='    0.00'] = 'nan'
+		alarm_dt = raw_dt[' Alarm Code']!='    0.00'
+		raw_dt[' CCN Number Conc'][alarm_dt] = 'nan'
 		return raw_dt
 
 	## DMA
@@ -152,7 +189,6 @@ class reader:
 		d_dma = dma['Diameter']
 		modi_ccndata = {}
 	
-		start_index = n.where(time_ccn==self.start.strftime('%X'))[0][0]
 		final_index = n.where(time_ccn==self.final.strftime('%X'))[0][0]
 		
 		## for calibration, SS change every 30 mins, and diameter change every 2 mins,
@@ -166,17 +202,20 @@ class reader:
 		## (30-4)/2 = 13 different diameter
 	
 		for i in range(0,len(time_ccn),1800):
-			i_ccn = start_index+i ## start time may not equal to CCNc's first data
-			if i_ccn>final_index: break
+			if i>final_index: break
 		
 			conc_ccn_ave, conc_cpc_ave, diameter = [], [], []
 			for num in range(13):
 				diameter.append(round(float(d_dma[i+270+120*num])))
-				conc_ccn_ave.append(n.mean(conc_ccn[i_ccn+270+120*num:i_ccn+330+120*num]))
-				conc_cpc_ave.append(n.mean(conc_cpc[i+270+120*num:i+330+120*num]))
+				conc_ccn_ave.append(n.nanmean(conc_ccn[i+270+120*num:i+330+120*num]))
+				conc_cpc_ave.append(n.nanmean(conc_cpc[i+270+120*num:i+330+120*num]))
 			
-			modi_ccndata.setdefault(SS_ccn[i_ccn],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
+			modi_ccndata.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
 		return modi_ccndata
+
+	def modi_smpsdata_mesr(self):
+		return
+		
 
 class calibration:
 	def __init__(self,data,date,**kwarg):
@@ -249,7 +288,7 @@ class calibration:
 		fig, ax = pl.subplots(fig_row,fig_col,figsize=(8,6),dpi=200,sharex=True,sharey=True)
 		ax = ax.reshape(fig_col*fig_row)
 		
-		for i,SS in zip(default['order'],self.data.keys()):
+		for i, SS in zip(default['order'],self.data.keys()):
 			calib_dt = self.calib_data(SS,get_dc=plot_dc) ## if plot dc, should get dc first
 			ax[i].plot(calib_dt['dia'],calib_dt['acti'],c=default['color'],
 					   marker='o',mfc=default['mfc'],mec=default['mec'],label='S curve')
