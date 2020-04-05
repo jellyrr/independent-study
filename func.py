@@ -7,6 +7,7 @@
 # 20200401 main_v0.5 : calib_SS : add table on figure
 # 20200402 main_v0.6 : calibration : add figure path
 # 20200404 main_v0.7 : read smps data completely, add function of checkout time
+# 20200405 main_v0.8 : smps2date fig fix out, correct_time_data : recieve kwarg, use object array, save datetime object instead of datetime string
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -52,10 +53,12 @@ class reader:
 	## wrong current time test	
 	## discountinue data test
 	## output data
-	def correct_time_data(self,_begin_,_fout_,_line,dt_splt,tm_indx,err_tm,del_tm,tm_start,nan_dt):
+	def correct_time_data(self,_begin_,_fout_,_line,tm_start,**_par):
 		## raw data
-		_data_ = dt_splt(_line)
-		cur_tm = _data_[tm_indx]
+		nan_dt = _par['nanDt']
+		_data_ = _par['dtSplt'](_line)
+		cur_tm = _data_[_par['tmIndx']]
+		err_tm, del_tm = _par['errTm'], _par['delTm']
 
 		## start test
 		if _begin_: 
@@ -65,7 +68,7 @@ class reader:
 		## wrong current time test
 		## check out data time series by current time +/- error time
 		if ((cur_tm == dtm.strftime(tm_start-err_tm,'%X'))|(cur_tm == dtm.strftime(tm_start+err_tm,'%X'))): 
-			cur_tm = dtm.strftime(tm_start,'%X')
+			_data_[_par['tmIndx']] = cur_tm = dtm.strftime(tm_start,'%X')
 
 		## discountinue data test
 		while cur_tm != dtm.strftime(tm_start,'%X'):
@@ -73,6 +76,9 @@ class reader:
 			tm_start += del_tm
 
 		## data colllect
+		_data_[_par['tmIndx']] = tm_start
+		## if save as datetime object
+
 		_fout_.append(_data_)
 		tm_start += del_tm
 		return tm_start, _begin_
@@ -84,6 +90,7 @@ class reader:
 	## 				'diameter' : 4~110
 	def smps_raw(self):
 		path, fout, switch, begin = self.path_smps, [], True, True
+		tmStart = self.start
 
 		for file in os.listdir(path):
 			if '.txt' not in file: continue
@@ -97,14 +104,16 @@ class reader:
 
 				## collect data from start time, and make nan array for discontinue data
 				## [2] is current time index
-				delTm, errTm, tmStart = dtmdt(minutes=5.), dtmdt(seconds=1.), self.start
-				nanDt  = lambda _tmStart: n.array(['nan']*2+[dtm.strftime(_tmStart,'%X')]+['nan']*len(header[3::]))
-				dtSplt = lambda _li: n.array(_li[:-1].split('\t'))
-				tmIndx = 2
+				
+				par = { 'nanDt'  : lambda _tmStart: n.array([n.nan]*2+[_tmStart]+[n.nan]*len(header[3::])),
+						'dtSplt' : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
+						'delTm'  : dtmdt(minutes=5.),
+						'errTm'  : dtmdt(seconds=1.),
+						'tmIndx' : 2 }	
 
 				for line in f:
 					## time check out and collect data
-					tmStart, begin = self.correct_time_data(begin,fout,line,dtSplt,tmIndx,errTm,delTm,tmStart,nanDt)
+					tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
 
 		return dict(zip(header,n.array(fout).T))
 
@@ -115,6 +124,7 @@ class reader:
 	## 				' CCN Number Conc' : 45
 	def ccn_raw(self):
 		path, fout, switch, begin = self.path_ccn, [], True, True
+		tmStart = self.start
 
 		for file in os.listdir(path):
 			if '.csv' not in file: continue
@@ -129,14 +139,16 @@ class reader:
 
 				## collect data from start time, and make nan array for discontinue data
 				## line[0:8] is current time
-				delTm, errTm, tmStart = dtmdt(seconds=1.), dtmdt(seconds=1.), self.start
-				nanDt = lambda _tmStart: n.array([dtm.strftime(_tmStart,'%X')]+['nan']*len(header[1::]))
-				dtSplt = lambda _li: n.array(_li[:-1].split(','))
-				tmIndx = 0
+				
+				par = { 'nanDt'  : lambda _tmStart: n.array([_tmStart]+['nan']*len(header[1::])),
+						'dtSplt' : lambda _li: n.array(_li[:-1].split(','),dtype=object),
+						'delTm'  : dtmdt(seconds=1.),
+						'errTm'  : dtmdt(seconds=1.),
+						'tmIndx' : 0 }
 
 				for line in f:
 					## check out time and collect data
-					tmStart, begin = self.correct_time_data(begin,fout,line,dtSplt,tmIndx,errTm,delTm,tmStart,nanDt)
+					tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
 
 		## alarm code
 		raw_dt = dict(zip(header,n.array(fout).T))
@@ -190,7 +202,7 @@ class reader:
 		modi_ccndata = {}
 	
 		final_index = n.where(time_ccn==self.final.strftime('%X'))[0][0]
-		
+
 		## for calibration, SS change every 30 mins, and diameter change every 2 mins,
 		## however, CCNc is unstable on first 4 mins, then DMA is unstable 30 seconds 
 		## after the start and 30 seconds before the end
@@ -213,9 +225,19 @@ class reader:
 			modi_ccndata.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
 		return modi_ccndata
 
-	def modi_smpsdata_mesr(self):
-		return
-		
+	def modi_smpsdata_mesr(self,tm_seri_dt=False):
+		modi_smpsdata = {}
+
+		smps = self.smps_raw()
+		smpsKey = list(smps.keys())
+		smpsBin = n.array([ smps[key] for key in smpsKey[4:111] ],dtype=float)
+		smpsTm  = smps[smpsKey[2]]
+
+		if tm_seri_dt:
+			[ modi_smpsdata.setdefault(time,bin) for time, bin in zip(smpsTm,smpsBin.T) ]
+		else:
+			modi_smpsdata.update({'time' : smpsTm, 'bin_data' : smpsBin, 'bins' :n.array(list(map(float,smpsKey[4:111]))) })
+		return modi_smpsdata
 
 class calibration:
 	def __init__(self,data,date,**kwarg):
@@ -233,7 +255,7 @@ class calibration:
 		self.data = data
 		self.size = len(data)
 		self.fs = 12
-		self.date = date
+		self.date = date.strftime('%Y/%m/%d')
 		self.kappa = default['kappa']
 		self.coe_A = 4.*default['sig_wa']/(461.*default['inst_T']*default['rho_w_T'])*1e9 ## diameter [nm]
 		self.figPath = default['fig_Path']
@@ -364,6 +386,55 @@ class calibration:
 		fig.savefig(default['fig_name'])
 		pl.close()
 
+class measurement:
+	def __init__(self,smpsData,start,final,**kwarg):
+		## set calculating parameter
+		default = {'fig_Path' : './'}
+		for key in kwarg:
+			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
+			default.update(kwarg)
+	
+		## set class parameter 
+		self.smpsData = smpsData
+		# self.size = len(smpsData)
+		self.fs = 13.
+		self.start = start
+		self.final = final
+		self.figPath = default['fig_Path']
 
+	def smps2date(self,**kwarg):
+		## set plot parameter
+		default = {'splt_hr'  : 6,
+				   'fig_name' : self.figPath+r'mesr_smps2date.png'}
+		for key in kwarg:
+			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
+			default.update(kwarg)
+		
+		smps = self.smpsData
+		time = smps['time']
+		data = smps['bin_data']
+		data[~(data==0)] = n.log10(data[~(data==0)])
+		data[data==0] = n.nan
+		fs = self.fs
+		import matplotlib.colors as colors
+		fig, ax = pl.subplots(figsize=(10.,6.),dpi=150.)
 
+		pm = ax.pcolormesh(n.arange(len(time)),smps['bins'],data,cmap='jet',vmin=0.,vmax=5.3)
+		cb = fig.colorbar(pm,ax=ax)
+		## https://matplotlib.org/api/colorbar_api.html#matplotlib.colorbar.ColorbarBase
 
+		ax.tick_params(which='major',length=5.,labelsize=fs-2.)
+		ax.tick_params(which='minor',length=2.5)
+		ax.set(yscale='log')
+		# cb.ax.set(scale='log')
+		
+		ax.set_xlabel(f"Time({self.start.strftime('%Y')})",fontsize=fs)
+		ax.set_ylabel('Dp (nm)',fontsize=fs)
+		ax.set_xticks(n.arange(0,len(time),default['splt_hr']*12))
+		ax.set_xticklabels([ time[indx].strftime('%m/%d %X') for indx in ax.get_xticks() ])
+		cb.ax.set_title('number conc.\n(#/$cm^3$/$\Delta log D_p$)',fontsize=fs-2.)
+		
+		fig.suptitle(f"SMPS data from ({self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",fontsize=fs+2.,style='italic')	
+		fig.savefig(default['fig_name'])
+		pl.close()
+		
