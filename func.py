@@ -8,6 +8,7 @@
 # 20200402 main_v0.6 : calibration : add figure path
 # 20200404 main_v0.7 : read smps data completely, add function of checkout time
 # 20200405 main_v0.8 : smps2date fig fix out, correct_time_data : recieve kwarg, use object array, save datetime object instead of datetime string
+# 20200405 main_v0.9 : correct_time_data : continue data test rewrite (check out next time with tolerence)
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -59,25 +60,27 @@ class reader:
 		_data_ = _par['dtSplt'](_line)
 		cur_tm = _data_[_par['tmIndx']]
 		err_tm, del_tm = _par['errTm'], _par['delTm']
+		cort_tm_now = lambda time: dtm.strftime(time,'%X')
+		cort_tm_low = lambda time: dtm.strftime(time-err_tm,'%X')
+		cort_tm_upr = lambda time: dtm.strftime(time+err_tm,'%X')
 
 		## start test
 		if _begin_: 
-			_begin_ = True if cur_tm != dtm.strftime(tm_start,'%X') else False
+			_begin_ = True if cur_tm != cort_tm_now(tm_start) else False
 			if _begin_: return tm_start, _begin_
 
 		## wrong current time test
 		## check out data time series by current time +/- error time
-		if ((cur_tm == dtm.strftime(tm_start-err_tm,'%X'))|(cur_tm == dtm.strftime(tm_start+err_tm,'%X'))): 
-			_data_[_par['tmIndx']] = cur_tm = dtm.strftime(tm_start,'%X')
+		if ((cur_tm == cort_tm_low(tm_start))|(cur_tm == cort_tm_upr(tm_start))): 
+			cur_tm = dtm.strftime(tm_start,'%X')
 
 		## discountinue data test
-		while cur_tm != dtm.strftime(tm_start,'%X'):
+		while ((cur_tm != cort_tm_low(tm_start))&(cur_tm != cort_tm_upr(tm_start))&(cur_tm != cort_tm_now(tm_start))):
 			_fout_.append(nan_dt(tm_start))
 			tm_start += del_tm
 
 		## data colllect
 		_data_[_par['tmIndx']] = tm_start
-		## if save as datetime object
 
 		_fout_.append(_data_)
 		tm_start += del_tm
@@ -109,7 +112,7 @@ class reader:
 						'dtSplt' : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
 						'delTm'  : dtmdt(minutes=5.),
 						'errTm'  : dtmdt(seconds=1.),
-						'tmIndx' : 2 }	
+						'tmIndx' : 2 }
 
 				for line in f:
 					## time check out and collect data
@@ -193,13 +196,13 @@ class reader:
 
 	## data for CCNc calibration
 	## use data of CCNc, DMA, CPC, and modified by time
-	def modi_ccndata_calib(self):
+	def mdfy_data_calib(self):
 		ccn, dma, cpc = self.ccn_raw(), self.dma_raw(), self.cpc_raw()
 		time_ccn, SS_ccn = ccn['    Time'], ccn[' Current SS']
 		conc_ccn = ccn[' CCN Number Conc'].astype(float)
 		conc_cpc = cpc['Concentration (#/cm�)'].astype(float)
 		d_dma = dma['Diameter']
-		modi_ccndata = {}
+		mdfy_data = {}
 	
 		final_index = n.where(time_ccn==self.final.strftime('%X'))[0][0]
 
@@ -222,11 +225,11 @@ class reader:
 				conc_ccn_ave.append(n.nanmean(conc_ccn[i+270+120*num:i+330+120*num]))
 				conc_cpc_ave.append(n.nanmean(conc_cpc[i+270+120*num:i+330+120*num]))
 			
-			modi_ccndata.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
-		return modi_ccndata
+			mdfy_data.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
+		return mdfy_data
 
-	def modi_smpsdata_mesr(self,tm_seri_dt=False):
-		modi_smpsdata = {}
+	def mdfy_data_mesr(self,tm_seri_dt=False):
+		mdfy_smpsdata = {}
 
 		smps = self.smps_raw()
 		smpsKey = list(smps.keys())
@@ -234,10 +237,10 @@ class reader:
 		smpsTm  = smps[smpsKey[2]]
 
 		if tm_seri_dt:
-			[ modi_smpsdata.setdefault(time,bin) for time, bin in zip(smpsTm,smpsBin.T) ]
+			[ mdfy_smpsdata.setdefault(time,bin) for time, bin in zip(smpsTm,smpsBin.T) ]
 		else:
-			modi_smpsdata.update({'time' : smpsTm, 'bin_data' : smpsBin, 'bins' :n.array(list(map(float,smpsKey[4:111]))) })
-		return modi_smpsdata
+			mdfy_smpsdata.update({'time' : smpsTm, 'bin_data' : smpsBin, 'bins' :n.array(list(map(float,smpsKey[4:111]))) })
+		return mdfy_smpsdata
 
 class calibration:
 	def __init__(self,data,date,**kwarg):
@@ -403,6 +406,7 @@ class measurement:
 		self.figPath = default['fig_Path']
 
 	def smps2date(self,**kwarg):
+		import matplotlib.colors as colr
 		## set plot parameter
 		default = {'splt_hr'  : 6,
 				   'fig_name' : self.figPath+r'mesr_smps2date.png'}
@@ -412,29 +416,38 @@ class measurement:
 		
 		smps = self.smpsData
 		time = smps['time']
-		data = smps['bin_data']
-		data[~(data==0)] = n.log10(data[~(data==0)])
-		data[data==0] = n.nan
-		fs = self.fs
-		import matplotlib.colors as colors
-		fig, ax = pl.subplots(figsize=(10.,6.),dpi=150.)
+		start_indx = n.where(time==self.start)[0][0]
+		final_indx = n.where(time==self.final)[0][0]
 
-		pm = ax.pcolormesh(n.arange(len(time)),smps['bins'],data,cmap='jet',vmin=0.,vmax=5.3)
-		cb = fig.colorbar(pm,ax=ax)
-		## https://matplotlib.org/api/colorbar_api.html#matplotlib.colorbar.ColorbarBase
+		time = time[start_indx:final_indx+1]
+		data = smps['bin_data'][:,start_indx:final_indx+1]
+		# data[~(data==0)] = n.log10(data[~(data==0)])
+		data[data==0] = 1e-5
+		data[n.isnan(data)] = 0.
+		fs = self.fs
+
+		fig, ax = pl.subplots(figsize=(10.,6.),dpi=150.)
+		
+		# pm = ax.pcolormesh(n.arange(len(time)),smps['bins'],data,cmap='jet',vmin=0.,vmax=5.3)
+		pm = ax.pcolormesh(n.arange(len(time)),smps['bins'],data,cmap='jet',norm=colr.LogNorm(vmin=10**.5,vmax=10**5.3))
+		cb = fig.colorbar(pm,ax=ax,pad=0.1,shrink=.93,fraction=0.05,aspect=25)
+
+		cbox = cb.ax.get_position()
+		cb.ax.set_position([cbox.x0,cbox.y0,cbox.width,cbox.height])
+		box = ax.get_position()
+		ax.set_position([box.x0,box.y0+0.02,box.width,box.height])
 
 		ax.tick_params(which='major',length=5.,labelsize=fs-2.)
 		ax.tick_params(which='minor',length=2.5)
 		ax.set(yscale='log')
-		# cb.ax.set(scale='log')
 		
 		ax.set_xlabel(f"Time({self.start.strftime('%Y')})",fontsize=fs)
-		ax.set_ylabel('Dp (nm)',fontsize=fs)
+		ax.set_ylabel('Electric modify diameter (nm)',fontsize=fs)
 		ax.set_xticks(n.arange(0,len(time),default['splt_hr']*12))
-		ax.set_xticklabels([ time[indx].strftime('%m/%d %X') for indx in ax.get_xticks() ])
+		ax.set_xticklabels([ time[indx].strftime('%m/%d%n%X') for indx in ax.get_xticks() ])
 		cb.ax.set_title('number conc.\n(#/$cm^3$/$\Delta log D_p$)',fontsize=fs-2.)
 		
 		fig.suptitle(f"SMPS data from ({self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",fontsize=fs+2.,style='italic')	
 		fig.savefig(default['fig_name'])
 		pl.close()
-		
+	
