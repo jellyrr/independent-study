@@ -9,7 +9,8 @@
 # 20200404 main_v0.7 : read smps data completely, add function of checkout time
 # 20200405 main_v0.8 : smps2date fig fix out, correct_time_data : recieve kwarg, use object array, save datetime object instead of datetime string
 # 20200405 main_v0.9 : correct_time_data : continue data test rewrite (check out next time with tolerence)
-# 20200405 main_v1.0 : cpc_raw : use time correct, correct_time_data : deal with blank line adta and unfortunate header, mdfy_data_mesr, plot_smps2date, plot_cpc2date : build completely
+# 20200408 main_v1.0 : cpc_raw : use time correct, correct_time_data : deal with blank line adta and unfortunate header, mdfy_data_mesr, plot_smps2date, plot_cpc2date : build completely
+# 20200415 main_v1.1 : data from start to final time, use os.path.join to build path, cpc_raw : start time + 1s to fit its true start time, start building calculate kappa function 
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -23,8 +24,9 @@
 # 3. measurement : Eulia's result
 
 import os
+from os.path import join as pth
 import numpy as n
-import scipy.stats as st
+from scipy.stats import linregress
 import matplotlib.pyplot as pl
 from datetime import datetime as dtm
 from datetime import timedelta as dtmdt
@@ -57,7 +59,6 @@ class reader:
 	## output data
 	def correct_time_data(self,_begin_,_fout_,_line,tm_start,**_par):
 		## raw data
-		# print(tm_start)
 		nan_dt	 = _par['nanDt']
 		_data_	 = _par['dtSplt'](_line)
 
@@ -94,7 +95,9 @@ class reader:
 
 		_fout_.append(_data_)
 		tm_start += del_tm
-		return tm_start, _begin_
+		if tm_start<=self.final: return tm_start, _begin_
+		else: return None, _begin_
+		
 
 	## SMPS
 	## change time every 5 min
@@ -107,7 +110,7 @@ class reader:
 
 		for file in os.listdir(path):
 			if '.txt' not in file: continue
-			with open(path+file,errors='replace') as f:
+			with open(pth(path,file),errors='replace') as f:
 				## get header and skip instrument information
 				if switch==True:
 					[ f.readline() for i in range(15) ]
@@ -127,7 +130,9 @@ class reader:
 
 				for line in f:
 					## time check out and collect data
-					tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
+					if tmStart: tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
+					else: break
+			if not tmStart: break
 
 		return dict(zip(header,n.array(fout).T))
 
@@ -142,7 +147,7 @@ class reader:
 
 		for file in os.listdir(path):
 			if '.csv' not in file: continue
-			with open(path+file,errors='replace') as f:
+			with open(pth(path,file),errors='replace') as f:
 				## get header and skip instrument information
 				if switch:
 					[ f.readline() for i in range(4) ]
@@ -182,7 +187,7 @@ class reader:
 		header = ['Date','Time','Diameter','SPD']
 		for file in os.listdir(path):
 			if '.txt' not in file: continue
-			with open(path+file,errors='replace') as f:
+			with open(pth(path,file),errors='replace') as f:
 				[ fout.append(n.array(line[:-1].split('\t'))) for line in f ]
 
 		return dict(zip(header,n.array(fout).T))
@@ -194,11 +199,11 @@ class reader:
 	## 				'Concentration (#/cm?)' : 1
 	def cpc_raw(self):
 		path, fout, switch, begin = self.path_cpc, [], True, True
-		tmStart = self.start
+		tmStart = self.start+dtmdt(seconds=1.) ## start time is not equal to first measure time
 
 		for file in os.listdir(path):
 			if '.csv' not in file: continue
-			with open(path+file,errors='replace') as f:
+			with open(pth(path,file),errors='replace') as f:
 				if switch:
 					[ f.readline() for i in range(17) ]
 					header = f.readline()[:-1].split(',')[:-1]
@@ -216,8 +221,9 @@ class reader:
 
 				for line in f:
 					## check out time and collect data
-					tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
-
+					if tmStart: tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
+					else: break
+			if not tmStart: break
 
 		return dict(zip(header,n.array(fout).T))
 
@@ -231,7 +237,7 @@ class reader:
 		d_dma = dma['Diameter']
 		mdfy_data_calib = {}
 
-		final_index = n.where(time_ccn==self.final.strftime('%X'))[0][0]
+		final_index = n.where(time_ccn==self.final)[0][0]
 
 		## for calibration, SS change every 30 mins, and diameter change every 2 mins,
 		## however, CCNc is unstable on first 4 mins, then DMA is unstable 30 seconds
@@ -255,22 +261,50 @@ class reader:
 			mdfy_data_calib.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
 		return mdfy_data_calib
 
-	def mdfy_data_mesr(self):
+	def mdfy_data_mesr(self,smps_data=True,cpc_data=True):
 		## smps data
-		smps = self.smps_raw()
-		smpsKey = list(smps.keys())
-		smpsBin = n.array([ smps[key] for key in smpsKey[4:111] ],dtype=float)
-		smpsTm  = smps[smpsKey[2]]
-		smpsData = {'time' 	   : smpsTm, 
-					'bin_data' : smpsBin,
-					'bins'	   : n.array(list(map(float,smpsKey[4:111])))}
+		if smps_data:
+			smps = self.smps_raw()
+			smpsKey = list(smps.keys())
+			smpsBin = n.array([ smps[key] for key in smpsKey[4:111] ],dtype=float)
+			smpsTm  = smps[smpsKey[2]]
+			smpsData = {'time' 	   : smpsTm,
+						'bin_data' : smpsBin,
+						'bins'	   : n.array(smpsKey[4:111],dtype=float)}
+		else: smpsData = None
+
 		## cpc data
-		cpc = self.cpc_raw()
-		cpcData = {'time' : cpc['Time'],
-				   'conc' : cpc['Concentration (#/cm�)'].astype(float)}
+		# raise ValueError(' CPC error value')
+		if cpc_data:
+			cpc = self.cpc_raw()
+			cpcData = {'time' : cpc['Time'],
+					   'conc' : cpc['Concentration (#/cm�)'].astype(float)}
+		else: cpcData = None
 
 		mdfy_data_mesr = {'smps' : smpsData, 'cpc' : cpcData}
-		# mdfy_data_mesr = {'smps' : None, 'cpc' : cpcData}
+
+		## calculate kappa
+		## find out Da
+		'''
+		smps = read.smps_raw()
+		key  = n.array(list(smps.keys())[4:111],dtype=float)
+		ary, stp = n.linspace(n.log10(key[0]),n.log10(key[-1]),len(key)-1,retstep=True)
+		nd = n.array([ n.array([ smps[ky][i] for ky in list(smps.keys())[4:111] ],dtype=float) for i in range(500) ])
+
+		from scipy.integrate import simps as sim
+		def int_f(_nd):
+			da_val = 0.
+			value  = sim(_nd,key,stp)*303.78/349.2
+			if n.isnan(_nd).sum()<50:
+				for num in range(len(key),2,-1):
+					int_part = sim(_nd[num-2:num],key[num-2:num],stp)
+					da_val += int_part
+					if da_val>value: 
+						return key[num-2] if (da_val-value)/int_part<=.5 else key[num-1] 
+			return n.nan
+		da = n.array([int_f(i) for i in nd])
+		'''
+
 		return mdfy_data_mesr
 
 class calibration:
@@ -279,7 +313,7 @@ class calibration:
 		default = {'kappa'	  : .61,
 				   'inst_T'   : 299.15, ## lab temperature [K]
 				   'rho_w_T'  : 997.,
-				   'fig_Path' : './',
+				   'fig_path' : './',
 				   'sig_wa'	  : .072}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
@@ -288,11 +322,11 @@ class calibration:
 		## set class parameter
 		self.data = data
 		self.size = len(data)
-		self.fs = 12
+		self.fs	  = 12
 		self.date = date.strftime('%Y/%m/%d')
 		self.kappa = default['kappa']
 		self.coe_A = 4.*default['sig_wa']/(461.*default['inst_T']*default['rho_w_T'])*1e9 ## diameter [nm]
-		self.figPath = default['fig_Path']
+		self.figPath = default['fig_path']
 
 	## activation of CCN may be like a S curve, there is a very sharp activation changing which variety
 	## by diameter
@@ -303,7 +337,7 @@ class calibration:
 			## data for S curve and regression line of activation changing
 			line_bottom = n.where((activation-activation.min())<10.)[0][-1]
 			line_top = n.where((100.-activation)<10.)[0][0]
-			line_coe = st.linregress(d_[line_bottom:line_top+1],activation[line_bottom:line_top+1])
+			line_coe = linregress(d_[line_bottom:line_top+1],activation[line_bottom:line_top+1])
 			line_x = n.array([0.,250.])
 			line_y = line_coe[0]*line_x+line_coe[1]
 			dc = (50.-line_coe[1])/line_coe[0]
@@ -329,7 +363,7 @@ class calibration:
 				   'mfc'	  	: '#7fdfff',
 				   'mec'	  	: '#297db7',
 				   'order' 		: [ i-1 for i in range(self.size) ], ## order of axes
-				   'fig_name' 	: self.figPath+r'calib_Scurve.png'}
+				   'fig_name' 	: r'calib_Scurve.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -348,7 +382,7 @@ class calibration:
 			calib_dt = self.calib_data(SS,get_dc=plot_dc) ## if plot dc, should get dc first
 			ax[i].plot(calib_dt['dia'],calib_dt['acti'],c=default['color'],
 					   marker='o',mfc=default['mfc'],mec=default['mec'],label='S curve')
-			if plot_dc==True:
+			if plot_dc:
 				## plot regression line
 				dc = calib_dt['dc']
 				ax[i].plot(calib_dt['line_data'][0],calib_dt['line_data'][1],
@@ -370,7 +404,7 @@ class calibration:
 		if ((self.size%2==1)&(self.size!=1)): ax[-1].remove()
 
 		fig.suptitle('Activation of CCN (Date : {:})'.format(self.date),fontsize=fs+3,style='italic')
-		fig.savefig(default['fig_name'])
+		fig.savefig(pth(self.figPath,default['fig_name']))
 		pl.close()
 
 	## use kappa kohler eq. and modified data to calculate the SS, then plotting regression line
@@ -381,7 +415,7 @@ class calibration:
 				   'mfc'		: '#ffffff',
 				   'ms'			: 6.,
 				   'mew'		: 1.8,
-				   'fig_name'   : self.figPath+r'calib_CalibTable.png'}
+				   'fig_name'   : r'calib_CalibTable.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -415,9 +449,9 @@ class calibration:
 		ax.set_ylabel('Calibration SS (%)',fontsize=fs)
 		ax.set_title('CCNc SS (%)',fontsize=fs)
 
-		fig.suptitle('Calibration Line of Supersaturation (Date : {:})'.format(self.date),
+		fig.suptitle('Calibration Table of Supersaturation (Date : {:})'.format(self.date),
 					 fontsize=fs+3,style='italic')
-		fig.savefig(default['fig_name'])
+		fig.savefig(pth(self.figPath,default['fig_name']))
 		pl.close()
 
 class measurement:
@@ -430,7 +464,7 @@ class measurement:
 
 		## func
 		def timeIndex(_time):
-			return n.where(_time==start)[0][0],n.where(_time==final)[0][0]
+			return n.where(_time==start)[0][0], n.where(_time==final)[0][0]
 
 		## set class parameter
 		self.timeIndex = timeIndex
@@ -446,13 +480,14 @@ class measurement:
 		import matplotlib.colors as colr
 		## set plot parameter
 		default = {'splt_hr'  : 6,
-				   'fig_name' : self.figPath+r'mesr_smps2date.png'}
+				   'fig_name' : r'mesr_smps2date.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
 
 		## set plot variable
-		smps = self.smpsData
+		if self.smpsData is not None: smps = self.smpsData 
+		else: raise ValueError('SMPS data is None !!!')
 		time = smps['time']
 		start_indx, final_indx = self.timeIndex(time)
 
@@ -471,8 +506,10 @@ class measurement:
 		box = ax.get_position()
 		ax.set_position([box.x0,box.y0+0.02,box.width,box.height])
 
-		ax.tick_params(which='major',length=5.,labelsize=fs-2.)
-		ax.tick_params(which='minor',length=2.5)
+		ax.tick_params(which='major',length=6.,labelsize=fs-2.)
+		ax.tick_params(which='minor',length=3.5)
+		cb.ax.tick_params(which='major',length=5.,labelsize=fs-2.)
+		cb.ax.tick_params(which='minor',length=2.5)
 		ax.set(yscale='log')
 
 		ax.set_xlabel(f"Time({self.start.strftime('%Y')})",fontsize=fs)
@@ -482,20 +519,21 @@ class measurement:
 		cb.ax.set_title('number conc.\n(#/$cm^3$/$\Delta log D_p$)',fontsize=fs-2.)
 
 		fig.suptitle(f"SMPS data from ({self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",fontsize=fs+2.,style='italic')
-		fig.savefig(default['fig_name'])
+		fig.savefig(pth(self.figPath,default['fig_name']))
 		pl.close()
 
 	## plot cpc with date
 	def plot_cpc2date(self,**kwarg):
 		## set plot parameter
 		default = {'splt_hr'  : 12,
-				   'fig_name' : self.figPath+r'mesr_cpc2date.png'}
+				   'fig_name' : r'mesr_cpc2date.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
 
 		## set plot variable
-		cpc  = self.cpcData
+		if self.cpcData is not None: cpc = self.cpcData 
+		else: raise ValueError('CPC data is None !!!')
 		time = cpc['time']
 		start_indx, final_indx = self.timeIndex(time)
 
@@ -503,22 +541,22 @@ class measurement:
 		data = cpc['conc'][start_indx:final_indx+1]/1e3
 		fs = self.fs
 		ylim = (0.,max(data)+10.) if max(data)<30. else (0.,30.)
+		tm_num = len(time)
 
 		## plot
 		fig, ax = pl.subplots(figsize=(10.,6.),dpi=150.)
 		
-		ax.plot(n.arange(len(time)),data,c='#7396ff',lw=1.5)
+		ax.plot(n.arange(tm_num),data,c='#7396ff',lw=1.5)
 
 		ax.tick_params(which='major',direction='in',length=7,labelsize=fs-2.5)
 		ax.tick_params(which='minor',direction='in',length=4.5)
-		ax.set(ylim=ylim)
+		ax.set(ylim=ylim,xlim=(0.,tm_num))
 
 		ax.set_xlabel(f"Time({self.start.strftime('%Y')})",fontsize=fs)
 		ax.set_ylabel(r'Condense Nuclei Number Conc. (#$\times 10^3 /cm^3$)',fontsize=fs)
-		ax.set_xticks(n.arange(0,len(time),int(default['splt_hr']*3600)))
+		ax.set_xticks(n.arange(0,tm_num,int(default['splt_hr']*3600)))
 		ax.set_xticklabels([ time[indx].strftime('%m/%d%n%X') for indx in ax.get_xticks() ])
 
 		fig.suptitle(f"CPC data from ({self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",fontsize=fs+2.,style='italic')
-		fig.savefig(default['fig_name'])
+		fig.savefig(pth(self.figPath,default['fig_name']))
 		pl.close()
-
