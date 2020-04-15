@@ -11,6 +11,7 @@
 # 20200405 main_v0.9 : correct_time_data : continue data test rewrite (check out next time with tolerence)
 # 20200408 main_v1.0 : cpc_raw : use time correct, correct_time_data : deal with blank line adta and unfortunate header, mdfy_data_mesr, plot_smps2date, plot_cpc2date : build completely
 # 20200415 main_v1.1 : data from start to final time, use os.path.join to build path, cpc_raw : start time + 1s to fit its true start time, start building calculate kappa function 
+# 20200415 main_v1.2 : correct_time_data : from processing cpc_raw to processing correct_time_data, skip start time test, add nan data to current time, change to the time which has first data
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -33,7 +34,7 @@ from datetime import timedelta as dtmdt
 
 # file reader
 class reader:
-	def __init__(self,start,final,**kwarg):
+	def __init__(self,start,final,td1DtPrces=True,**kwarg):
 		## set data path parameter
 		default = {'path_ccn'  : 'ccn/',
 				   'path_dma'  : 'dma/',
@@ -46,18 +47,19 @@ class reader:
 		## set class parameter
 		self.start = start ## datetime object
 		self.final = final ## datetime object
-		self.kil_date  = lambda time: dtm.strptime(dtm.strftime(time,'%X'),'%X')
-		self.path_ccn  = default['path_ccn']
-		self.path_dma  = default['path_dma']
-		self.path_cpc  = default['path_cpc']
-		self.path_smps = default['path_smps']
+		self.kil_date   = lambda time: dtm.strptime(dtm.strftime(time,'%X'),'%X')
+		self.td1DtPrces = td1DtPrces
+		self.path_ccn   = default['path_ccn']
+		self.path_dma   = default['path_dma']
+		self.path_cpc   = default['path_cpc']
+		self.path_smps  = default['path_smps']
 
 	## data of corrected time
 	## start test
 	## wrong current time test
 	## discountinue data test
 	## output data
-	def correct_time_data(self,_begin_,_fout_,_line,tm_start,**_par):
+	def correct_time_data(self,_begin_,_fout_,_line,tm_start,td1_start=False,**_par):
 		## raw data
 		nan_dt	 = _par['nanDt']
 		_data_	 = _par['dtSplt'](_line)
@@ -66,7 +68,7 @@ class reader:
 			## deal with blank line data and unfortunate header
 			## skip it
 			cur_tm = _data_[_par['tmIndx']]
-			chkDtmOb = dtm.strptime(cur_tm,'%X')
+			chkDtmOb = dtm.strptime(cur_tm,'%X') ## if cur_tm is not datetime object, it will error
 		except:
 			return tm_start, _begin_
 
@@ -74,6 +76,12 @@ class reader:
 		cort_tm_now = lambda time: dtm.strftime(time,'%X')
 		cort_tm_low = lambda time: dtm.strftime(time-err_tm,'%X')
 		cort_tm_upr = lambda time: dtm.strftime(time+err_tm,'%X')
+
+		## (start time different = 1) test
+		if (td1_start&_begin_): 
+			_begin_ = False					## skip the start test
+			_fout_.append(nan_dt(tm_start)) ## add nan to current time data
+			tm_start += del_tm				## change to the time which has first data
 
 		## start test
 		if _begin_:
@@ -87,7 +95,7 @@ class reader:
 
 		## discountinue data test
 		while ((cur_tm != cort_tm_low(tm_start))&(cur_tm != cort_tm_upr(tm_start))&(cur_tm != cort_tm_now(tm_start))):
-			_fout_.append(nan_dt(tm_start))
+			_fout_.append(nan_dt(tm_start)) ## add nan data to discontinue time
 			tm_start += del_tm
 
 		## data colllect
@@ -120,7 +128,6 @@ class reader:
 
 				## collect data from start time, and make nan array for discontinue data
 				## [2] is current time index
-
 				par = { 'nanDt'  : lambda _tmStart: n.array([n.nan]*2+[_tmStart]+[n.nan]*len(header[3::])),
 						'dtSplt' : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
 						'delTm'  : dtmdt(minutes=5.),
@@ -199,7 +206,7 @@ class reader:
 	## 				'Concentration (#/cm?)' : 1
 	def cpc_raw(self):
 		path, fout, switch, begin = self.path_cpc, [], True, True
-		tmStart = self.start+dtmdt(seconds=1.) ## start time is not equal to first measure time
+		tmStart = self.start
 
 		for file in os.listdir(path):
 			if '.csv' not in file: continue
@@ -221,7 +228,7 @@ class reader:
 
 				for line in f:
 					## check out time and collect data
-					if tmStart: tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
+					if tmStart: tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,td1_start=self.td1DtPrces,**par)
 					else: break
 			if not tmStart: break
 
