@@ -12,19 +12,20 @@
 # 20200408 main_v1.0 : cpc_raw : use time correct, correct_time_data : deal with blank line adta and unfortunate header, mdfy_data_mesr, plot_smps2date, plot_cpc2date : build completely
 # 20200415 main_v1.1 : data from start to final time, use os.path.join to build path, cpc_raw : start time + 1s to fit its true start time, start building calculate kappa function 
 # 20200415 main_v1.2 : correct_time_data : from processing cpc_raw to processing correct_time_data, skip start time test, add nan data to current time, change to the time which has first data
+# 20200416 main_v1.3 : mdfy_data_mesr : kappa calculate building, read kappa necessary file done(without test), use accumulate array instead of simps integral to calculate the activate diameter | refresh targets
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
-# 	method : use time stamp -> test by calibraion data
+# 	method : use time stamp to correct file
 # 1. calibration and measurement data process:
 # 	(1) calibration : deal with time due to the data may be unstable in first 4 min by CCNc,
 #		then DMA changes diameter every 2 min, however, first and last 30s
 #		may either be unstable
 # 	(2) measurement : different deltatime of different SS table
-# 2. calibration : S curve, calibration line
-# 3. measurement : Eulia's result
+# 2. calibration : S curve, calibration table
+# 3. measurement : cpc2date, smps2date, kappa2date
 
-import os
+from os import listdir
 from os.path import join as pth
 import numpy as n
 from scipy.stats import linregress
@@ -47,7 +48,6 @@ class reader:
 		## set class parameter
 		self.start = start ## datetime object
 		self.final = final ## datetime object
-		self.kil_date   = lambda time: dtm.strptime(dtm.strftime(time,'%X'),'%X')
 		self.td1DtPrces = td1DtPrces
 		self.path_ccn   = default['path_ccn']
 		self.path_dma   = default['path_dma']
@@ -78,7 +78,7 @@ class reader:
 		cort_tm_upr = lambda time: dtm.strftime(time+err_tm,'%X')
 
 		## (start time different = 1) test
-		if (td1_start&_begin_): 
+		if (td1_start&_begin_):
 			_begin_ = False					## skip the start test
 			_fout_.append(nan_dt(tm_start)) ## add nan to current time data
 			tm_start += del_tm				## change to the time which has first data
@@ -105,7 +105,6 @@ class reader:
 		tm_start += del_tm
 		if tm_start<=self.final: return tm_start, _begin_
 		else: return None, _begin_
-		
 
 	## SMPS
 	## change time every 5 min
@@ -116,7 +115,7 @@ class reader:
 		path, fout, switch, begin = self.path_smps, [], True, True
 		tmStart = self.start
 
-		for file in os.listdir(path):
+		for file in listdir(path):
 			if '.txt' not in file: continue
 			with open(pth(path,file),errors='replace') as f:
 				## get header and skip instrument information
@@ -152,7 +151,7 @@ class reader:
 		path, fout, switch, begin = self.path_ccn, [], True, True
 		tmStart = self.start
 
-		for file in os.listdir(path):
+		for file in listdir(path):
 			if '.csv' not in file: continue
 			with open(pth(path,file),errors='replace') as f:
 				## get header and skip instrument information
@@ -192,7 +191,7 @@ class reader:
 	def dma_raw(self):
 		path, fout = self.path_dma, []
 		header = ['Date','Time','Diameter','SPD']
-		for file in os.listdir(path):
+		for file in listdir(path):
 			if '.txt' not in file: continue
 			with open(pth(path,file),errors='replace') as f:
 				[ fout.append(n.array(line[:-1].split('\t'))) for line in f ]
@@ -208,7 +207,7 @@ class reader:
 		path, fout, switch, begin = self.path_cpc, [], True, True
 		tmStart = self.start
 
-		for file in os.listdir(path):
+		for file in listdir(path):
 			if '.csv' not in file: continue
 			with open(pth(path,file),errors='replace') as f:
 				if switch:
@@ -268,12 +267,12 @@ class reader:
 			mdfy_data_calib.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
 		return mdfy_data_calib
 
-	def mdfy_data_mesr(self,smps_data=True,cpc_data=True):
+	def mdfy_data_mesr(self,smps_data=True,cpc_data=True,kappa_data=True):
 		## smps data
 		if smps_data:
 			smps = self.smps_raw()
 			smpsKey = list(smps.keys())
-			smpsBin = n.array([ smps[key] for key in smpsKey[4:111] ],dtype=float)
+			smpsBin = n.array([ smps[key] for key in smpsKey[4:111] ],dtype=float) ## [ [ smps[Dp1] ], [ smps[Dp2] ], .... ]
 			smpsTm  = smps[smpsKey[2]]
 			smpsData = {'time' 	   : smpsTm,
 						'bin_data' : smpsBin,
@@ -288,29 +287,53 @@ class reader:
 					   'conc' : cpc['Concentration (#/cm�)'].astype(float)}
 		else: cpcData = None
 
-		mdfy_data_mesr = {'smps' : smpsData, 'cpc' : cpcData}
+		## kappa data
+		## calculate kappa by cpc, ccn, and smps
+		## ccn : data/s, cpc : data/s, smps : data/5 mins
+		## ratio of activation = nCCN/nCN = ccnConc/cpcConc (5 mins average)
+		## 
 
-		## calculate kappa
-		## find out Da
-		'''
-		smps = read.smps_raw()
-		key  = n.array(list(smps.keys())[4:111],dtype=float)
-		ary, stp = n.linspace(n.log10(key[0]),n.log10(key[-1]),len(key)-1,retstep=True)
-		nd = n.array([ n.array([ smps[ky][i] for ky in list(smps.keys())[4:111] ],dtype=float) for i in range(500) ])
+		if kappa_data:
+			## import accumulate iterator
+			from itertools import accumulate as accu
 
-		from scipy.integrate import simps as sim
-		def int_f(_nd):
-			da_val = 0.
-			value  = sim(_nd,key,stp)*303.78/349.2
-			if n.isnan(_nd).sum()<50:
-				for num in range(len(key),2,-1):
-					int_part = sim(_nd[num-2:num],key[num-2:num],stp)
-					da_val += int_part
-					if da_val>value: 
-						return key[num-2] if (da_val-value)/int_part<=.5 else key[num-1] 
-			return n.nan
-		da = n.array([int_f(i) for i in nd])
-		'''
+			## get ccn, smps, cpc data and take necessary information
+			## ccn
+			ccn = self.ccn_raw()
+			ccnConc = ccn[' CCN Number Conc'].astype(float)
+
+			## smps, if smps_data = False, get raw data
+			try:
+				smpsBinDp = smpsData['bins']
+				smpsBin_perDy = smpsBin.T
+			except:
+				smps = self.smps_raw()
+				smpsBinDp = n.array(smpsKey[4:111],dtype=float)
+				smpsBin_perDy = n.array([ smps[key] for key in smpsBinDp ],dtype=float).T
+			
+			## cpc, if cpc_data = False, get raw data
+			try:
+				cpcConc = cpcData['conc']
+			except:
+				cpc = self.cpc_raw()
+				cpcConc = cpc['Concentration (#/cm�)'].astype(float)
+
+
+			f_act = 303.78/349.2
+
+
+			nd = [ [ float(smps[ky][i]) for ky in list(smps.keys())[4:111] ] for i in range(1) ]
+			
+			## output to measurement, due to SS calibration table is not input in read file
+			
+			
+			print(key[n.abs(n.array(list(accu(nd[0][::-1])))[::-1]/n.sum(nd[0])-f_act).argmin()])
+		
+		else: kappaData = None
+
+		mdfy_data_mesr = {'smps'  : smpsData, 
+						  'cpc'   : cpcData, 
+						  'kappa' : kappaData}
 
 		return mdfy_data_mesr
 
