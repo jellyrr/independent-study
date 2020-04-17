@@ -13,6 +13,7 @@
 # 20200415 main_v1.1 : data from start to final time, use os.path.join to build path, cpc_raw : start time + 1s to fit its true start time, start building calculate kappa function 
 # 20200415 main_v1.2 : correct_time_data : from processing cpc_raw to processing correct_time_data, skip start time test, add nan data to current time, change to the time which has first data
 # 20200416 main_v1.3 : mdfy_data_mesr : kappa calculate building, read kappa necessary file done(without test), use accumulate array instead of simps integral to calculate the activate diameter | refresh targets
+# 20200417 main_v1.4 : mdfy_data_mesr : kappa calculate complete | measurement kappa calculate function building
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -97,6 +98,7 @@ class reader:
 		while ((cur_tm != cort_tm_low(tm_start))&(cur_tm != cort_tm_upr(tm_start))&(cur_tm != cort_tm_now(tm_start))):
 			_fout_.append(nan_dt(tm_start)) ## add nan data to discontinue time
 			tm_start += del_tm
+			if tm_start>=self.final: return None, _begin_
 
 		## data colllect
 		_data_[_par['tmIndx']] = tm_start
@@ -173,13 +175,15 @@ class reader:
 						'tmIndx' : 0 }
 
 				for line in f:
-					## check out time and collect data
-					tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
+					## time check out and collect data
+					if tmStart: tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
+					else: break
+			if not tmStart: break
 
 		## alarm code
 		raw_dt = dict(zip(header,n.array(fout).T))
 		alarm_dt = raw_dt[' Alarm Code']!='    0.00'
-		raw_dt[' CCN Number Conc'][alarm_dt] = 'nan'
+		raw_dt[' CCN Number Conc'][alarm_dt] = n.nan
 		return raw_dt
 
 	## DMA
@@ -280,7 +284,6 @@ class reader:
 		else: smpsData = None
 
 		## cpc data
-		# raise ValueError(' CPC error value')
 		if cpc_data:
 			cpc = self.cpc_raw()
 			cpcData = {'time' : cpc['Time'],
@@ -291,7 +294,13 @@ class reader:
 		## calculate kappa by cpc, ccn, and smps
 		## ccn : data/s, cpc : data/s, smps : data/5 mins
 		## ratio of activation = nCCN/nCN = ccnConc/cpcConc (5 mins average)
+		## | ----- || ----- || ..... || ----- |
+		## < 5 min >< 5 min > ....... < 5 min >
+		## neglect first smps data due to no corresponding with average ratio of activation
 		## 
+		## real nCN  = sum(all bin data)
+		## real nCCN = nCCN/nCN * real nCN
+		## use accumulate function to find when is sum(bin data) = real nCCN
 
 		if kappa_data:
 			## import accumulate iterator
@@ -302,33 +311,60 @@ class reader:
 			ccn = self.ccn_raw()
 			ccnConc = ccn[' CCN Number Conc'].astype(float)
 
-			## smps, if smps_data = False, get raw data
+			## get smps data, if smps_data = False, get raw data
+			## first smps bin data could not correspond to activate ratio, neglect it 
 			try:
 				smpsBinDp = smpsData['bins']
-				smpsBin_perDy = smpsBin.T
+				smpsBin_perDy = smpsBin.T[1::]
 			except:
 				smps = self.smps_raw()
-				smpsBinDp = n.array(smpsKey[4:111],dtype=float)
-				smpsBin_perDy = n.array([ smps[key] for key in smpsBinDp ],dtype=float).T
+				smpsBinDp = n.array(list(smps.keys())[4:111])
+				smpsBin_perDy = n.array([ smps[key] for key in smpsBinDp ],dtype=float).T[1::]
+				smpsTm  = smps[list(smps.keys())[2]]
+				smpsBinDp = smpsBinDp.astype(float)
 			
-			## cpc, if cpc_data = False, get raw data
+			## get cpc data, if cpc_data = False, get raw data
 			try:
 				cpcConc = cpcData['conc']
 			except:
 				cpc = self.cpc_raw()
 				cpcConc = cpc['Concentration (#/cm�)'].astype(float)
-
-
-			f_act = 303.78/349.2
-
-
-			nd = [ [ float(smps[ky][i]) for ky in list(smps.keys())[4:111] ] for i in range(1) ]
 			
+			## kappa calculating data 
+			## nCCN/nCN per second, will be average when split time list giving
+			## however, split list and SS table is not fixed, customized in 'measurement' function
+
+			actRat = ccnConc/cpcConc ## nCCN/nCN per second
+
+			## due to discountinue bin data, each bin diameter means the average diameter in a range,
+			## then we use accumulate function from large bin Dp to smaller to check out the bin Dp which
+			## is most similar to Da(activate Dp)
+			## however, we need 5 mins average ratio of activation, therefore, finding Da function would 
+			## applicate in 'measurement' function
+			##
+			##    | 			|
+			## 1  | -----		|     
+			##    |	 	 \		|--> nCCN/nCN  			Accumulate plot of bin data to Dp(log scale)
+			##    |	 	  \		|   					
+			## .5 |	 	   \	|   					each data have been standardization by divide
+			##    |		    ----+----					real nCN
+			##    |		  		|    \
+			## 0  |		  	    |     -----	
+			##    --------------o----------
+			##	    9	    100	 \	   400	(nm)
+			##				      Da
+
+			actAccuFunc = lambda _bin_dt : n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)
+			actAccuDt   = n.array([ actAccuFunc(bin_dt) for bin_dt in smpsBin_perDy ])
+			
+			kappaData 	= {'smps_time' : smpsTm,
+						   'perS_time' : cpc['Time'],
+						   'accu_data' : actAccuDt,
+						   'act_ratio' : actRat}
+
 			## output to measurement, due to SS calibration table is not input in read file
-			
-			
-			print(key[n.abs(n.array(list(accu(nd[0][::-1])))[::-1]/n.sum(nd[0])-f_act).argmin()])
-		
+			## lambda _bin_dt : n.abs(n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)-f_act).argmin()
+	
 		else: kappaData = None
 
 		mdfy_data_mesr = {'smps'  : smpsData, 
@@ -336,6 +372,7 @@ class reader:
 						  'kappa' : kappaData}
 
 		return mdfy_data_mesr
+
 
 class calibration:
 	def __init__(self,data,date,**kwarg):
