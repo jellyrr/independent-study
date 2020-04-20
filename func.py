@@ -14,6 +14,7 @@
 # 20200415 main_v1.2 : correct_time_data : from processing cpc_raw to processing correct_time_data, skip start time test, add nan data to current time, change to the time which has first data
 # 20200416 main_v1.3 : mdfy_data_mesr : kappa calculate building, read kappa necessary file done(without test), use accumulate array instead of simps integral to calculate the activate diameter | refresh targets
 # 20200417 main_v1.4 : mdfy_data_mesr : kappa calculate complete | measurement kappa calculate function building
+# 20200420 main_v1.5 : mdfy_data_mesr : calculate Da before output data | measurement : kappa calculated data split building
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -33,6 +34,8 @@ from scipy.stats import linregress
 import matplotlib.pyplot as pl
 from datetime import datetime as dtm
 from datetime import timedelta as dtmdt
+import warnings
+warnings.simplefilter('ignore', category=RuntimeWarning)
 
 # file reader
 class reader:
@@ -254,7 +257,7 @@ class reader:
 		## after the start and 30 seconds before the end
 		## | ---- || -- || -- |.....| -- |	for ch : | - || -- || - |
 		## < uns  >< ch >< ch >.....< ch >	  	   	 <uns>< st ><uns>
-		## <            30 min           > 	   	   	 <    2 min     >
+		## <           30 mins           > 	   	   	 <    2 mins    >
 		## stable(st), unstable(uns), diameter change(ch)
 		## 30min = 1800s, 4min 30s = 270s, 4min 90s = 330s, 2min = 120s
 		## (30-4)/2 = 13 different diameter
@@ -320,7 +323,7 @@ class reader:
 				smps = self.smps_raw()
 				smpsBinDp = n.array(list(smps.keys())[4:111])
 				smpsBin_perDy = n.array([ smps[key] for key in smpsBinDp ],dtype=float).T[1::]
-				smpsTm  = smps[list(smps.keys())[2]]
+				smpsTm  = smps[list(smps.keys())[2]][1::]
 				smpsBinDp = smpsBinDp.astype(float)
 			
 			## get cpc data, if cpc_data = False, get raw data
@@ -331,40 +334,37 @@ class reader:
 				cpcConc = cpc['Concentration (#/cm�)'].astype(float)
 			
 			## kappa calculating data 
-			## nCCN/nCN per second, will be average when split time list giving
-			## however, split list and SS table is not fixed, customized in 'measurement' function
+			## nCCN/nCN per second, will be average every 5 minutes
+			## however, SS table and SS change time is not fixed, customized in 'measurement' function
 
-			actRat = ccnConc/cpcConc ## nCCN/nCN per second
+			## nCCN/nCN per 5 minutes
+			actRat = n.nanmean(n.reshape(ccnConc/cpcConc,(-1,300)),axis=1)
 
 			## due to discountinue bin data, each bin diameter means the average diameter in a range,
-			## then we use accumulate function from large bin Dp to smaller to check out the bin Dp which
-			## is most similar to Da(activate Dp)
-			## however, we need 5 mins average ratio of activation, therefore, finding Da function would 
-			## applicate in 'measurement' function
-			##
-			##    | 			|
-			## 1  | -----		|     
-			##    |	 	 \		|--> nCCN/nCN  			Accumulate plot of bin data to Dp(log scale)
-			##    |	 	  \		|   					
-			## .5 |	 	   \	|   					each data have been standardization by divide
-			##    |		    ----+----					real nCN
-			##    |		  		|    \
-			## 0  |		  	    |     -----	
-			##    --------------o----------
-			##	    9	    100	 \	   400	(nm)
-			##				      Da
+			## then we use accumulate function from large bin Dp to smaller to check out the bin Dp 
+			## which is most similar to Da(activate Dp)
+			## 
+			##     | 			 |
+			## 1.0 | -----		 |     
+			##     |	  \		 |--> nCCN/nCN  		Accumulate plot of bin data to Dp(log scale)
+			##     |	   \	 |   					
+			## 0.5 |	    \	 |   					each data have been standardization by divide
+			##     |		 ----+----					real nCN
+			##     |		  	 |    \
+			## 0.0 |		  	 |     -----
+			##     --------------o----------
+			## 	    9	    100	  \	   400	 (nm)(log scale)
+			## 				       Da
 
-			actAccuFunc = lambda _bin_dt : n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)
-			actAccuDt   = n.array([ actAccuFunc(bin_dt) for bin_dt in smpsBin_perDy ])
+			## find the index of Da
+			actDaFunc = lambda _bin_dt, _f_act : n.abs(n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)-_f_act).argmin() 
+			actDaDt   = n.array([ n.nan if n.isnan(f_act) else smpsBinDp[actDaFunc(bin_dt,f_act)]
+								  for bin_dt, f_act in zip(smpsBin_perDy,actRat) ])
 			
 			kappaData 	= {'smps_time' : smpsTm,
 						   'perS_time' : cpc['Time'],
-						   'accu_data' : actAccuDt,
-						   'act_ratio' : actRat}
+						   'act_dia'   : actDaDt}
 
-			## output to measurement, due to SS calibration table is not input in read file
-			## lambda _bin_dt : n.abs(n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)-f_act).argmin()
-	
 		else: kappaData = None
 
 		mdfy_data_mesr = {'smps'  : smpsData, 
