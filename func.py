@@ -15,6 +15,7 @@
 # 20200416 main_v1.3 : mdfy_data_mesr : kappa calculate building, read kappa necessary file done(without test), use accumulate array instead of simps integral to calculate the activate diameter | refresh targets
 # 20200417 main_v1.4 : mdfy_data_mesr : kappa calculate complete | measurement kappa calculate function building
 # 20200420 main_v1.5 : mdfy_data_mesr : calculate Da before output data | measurement : kappa calculated data split building
+# 20200511 main_v1.6 : mdfy_data_mesr : rebuilding calculate kappa function (not yet)
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -39,7 +40,7 @@ warnings.simplefilter('ignore', category=RuntimeWarning)
 
 # file reader
 class reader:
-	def __init__(self,start,final,td1DtPrces=True,**kwarg):
+	def __init__(self,start,final,td1DtPrces=False,**kwarg):
 		## set data path parameter
 		default = {'path_ccn'  : 'ccn/',
 				   'path_dma'  : 'dma/',
@@ -65,8 +66,8 @@ class reader:
 	## output data
 	def correct_time_data(self,_begin_,_fout_,_line,tm_start,td1_start=False,**_par):
 		## raw data
-		nan_dt	 = _par['nanDt']
-		_data_	 = _par['dtSplt'](_line)
+		nan_dt = _par['nanDt']
+		_data_ = _par['dtSplt'](_line)
 
 		try:
 			## deal with blank line data and unfortunate header
@@ -113,10 +114,47 @@ class reader:
 
 	## SMPS
 	## change time every 5 min
+	## information : 17 lines
 	## keys index : 'Date' : 1 (%D)
 	## 				'Start Time' : 2 (%X)
 	## 				'diameter' : 4~110
 	def smps_raw(self):
+		path, fout, switch, begin = self.path_smps, [], True, True
+		tmStart = self.start
+
+		for file in listdir(path):
+			if '.txt' not in file: continue
+			with open(pth(path,file),errors='replace') as f:
+				## get header and skip instrument information
+				if switch==True:
+					[ f.readline() for i in range(17) ]
+					header = f.readline()[:-1].split('\t')
+					switch = False
+				else: [ f.readline() for i in range(16) ]
+
+				## collect data from start time, and make nan array for discontinue data
+				## [2] is current time index
+				par = { 'nanDt'  : lambda _tmStart: n.array([n.nan]*2+[_tmStart]+[n.nan]*len(header[3::])),
+						'dtSplt' : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
+						'delTm'  : dtmdt(minutes=5.),
+						'errTm'  : dtmdt(seconds=1.),
+						'hdrLn'	 : len(header),
+						'tmIndx' : 2 }
+
+				for line in f:
+					## time check out and collect data
+					if tmStart: tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
+					else: break
+			if not tmStart: break
+		return dict(zip(header,n.array(fout).T))
+
+	## SMPS_others
+	## change time every 5 min
+	## information : 15 lines
+	## keys index : 'Date' : 1 (%D)
+	## 				'Start Time' : 2 (%X)
+	## 				'diameter' : 4~110
+	def smpsOthers_raw(self):
 		path, fout, switch, begin = self.path_smps, [], True, True
 		tmStart = self.start
 
@@ -144,7 +182,6 @@ class reader:
 					if tmStart: tmStart, begin = self.correct_time_data(begin,fout,line,tmStart,**par)
 					else: break
 			if not tmStart: break
-
 		return dict(zip(header,n.array(fout).T))
 
 	## CCNc
@@ -274,9 +311,20 @@ class reader:
 			mdfy_data_calib.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
 		return mdfy_data_calib
 
-	def mdfy_data_mesr(self,smps_data=True,cpc_data=True,kappa_data=True):
+	def mdfy_data_mesr(self,smps_data=True,cpc_data=True,kappa_data=True,smpsOther_data=False):
 		## smps data
 		if smps_data:
+			smps = self.smps_raw()
+			smpsKey = list(smps.keys())
+			smpsBin = n.array([ smps[key] for key in smpsKey[8:115] ],dtype=float) ## [ [ smps[Dp1] ], [ smps[Dp2] ], .... ]
+			smpsTm  = smps[smpsKey[2]]
+			smpsData = {'time' 	   : smpsTm,
+						'bin_data' : smpsBin,
+						'bins'	   : n.array(smpsKey[8:115],dtype=float)}
+		else: smpsData = None
+
+		## smps other data
+		if smpsOther_data:
 			smps = self.smps_raw()
 			smpsKey = list(smps.keys())
 			smpsBin = n.array([ smps[key] for key in smpsKey[4:111] ],dtype=float) ## [ [ smps[Dp1] ], [ smps[Dp2] ], .... ]
@@ -284,7 +332,7 @@ class reader:
 			smpsData = {'time' 	   : smpsTm,
 						'bin_data' : smpsBin,
 						'bins'	   : n.array(smpsKey[4:111],dtype=float)}
-		else: smpsData = None
+		elif not smps_data: smpsData = None
 
 		## cpc data
 		if cpc_data:
@@ -298,8 +346,9 @@ class reader:
 		## ccn : data/s, cpc : data/s, smps : data/5 mins
 		## ratio of activation = nCCN/nCN = ccnConc/cpcConc (5 mins average)
 		## | ----- || ----- || ..... || ----- |
-		## < 5 min >< 5 min > ....... < 5 min >
+		## < 5 min >< 5 min >  .....  < 5 min >
 		## neglect first smps data due to no corresponding with average ratio of activation
+		## in addition, unstable data occurs on SS change timing, which we could not use these data  
 		## 
 		## real nCN  = sum(all bin data)
 		## real nCCN = nCCN/nCN * real nCN
@@ -320,8 +369,12 @@ class reader:
 				smpsBinDp = smpsData['bins']
 				smpsBin_perDy = smpsBin.T[1::]
 			except:
-				smps = self.smps_raw()
-				smpsBinDp = n.array(list(smps.keys())[4:111])
+				if smpsOther_data:
+					smps = self.smpsOthers_raw()
+					smpsBinDp = n.array(list(smps.keys())[4:111])
+				else:
+					smps = self.smps_raw()
+					smpsBinDp = n.array(list(smps.keys())[8:115])
 				smpsBin_perDy = n.array([ smps[key] for key in smpsBinDp ],dtype=float).T[1::]
 				smpsTm  = smps[list(smps.keys())[2]][1::]
 				smpsBinDp = smpsBinDp.astype(float)
@@ -333,20 +386,13 @@ class reader:
 				cpc = self.cpc_raw()
 				cpcConc = cpc['Concentration (#/cm�)'].astype(float)
 			
-			## kappa calculating data 
-			## nCCN/nCN per second, will be average every 5 minutes
-			## however, SS table and SS change time is not fixed, customized in 'measurement' function
-
-			## nCCN/nCN per 5 minutes
-			actRat = n.nanmean(n.reshape(ccnConc/cpcConc,(-1,300)),axis=1)
-
 			## due to discountinue bin data, each bin diameter means the average diameter in a range,
 			## then we use accumulate function from large bin Dp to smaller to check out the bin Dp 
 			## which is most similar to Da(activate Dp)
 			## 
 			##     | 			 |
 			## 1.0 | -----		 |     
-			##     |	  \		 |--> nCCN/nCN  		Accumulate plot of bin data to Dp(log scale)
+			##     |	  \		 | --> nCCN/nCN  		Accumulate plot of bin data to Dp(log scale)
 			##     |	   \	 |   					
 			## 0.5 |	    \	 |   					each data have been standardization by divide
 			##     |		 ----+----					real nCN
@@ -355,11 +401,45 @@ class reader:
 			##     --------------o----------
 			## 	    9	    100	  \	   400	 (nm)(log scale)
 			## 				       Da
+# test
+#-----------------------------------------------------------------------------------------------
+			## unsable data process
+			## two methods
+			## 1. 5 mins unstable CCN data and 5 mins mean conc. with last SMPS data
+			## | -------------- | SMPS
+			## | ----- || ----- | CCN
+			## <  us   ><	st  >
+			##
+			## 2. 2 mins unstable CCN data and 3 mins + 5 mins mean conc. with SMPS data
+			## | --------- || --------- | SMPS
+			## | -- || --- || --------- | CCN
+			## < us ><	st ><     st    >
+			
+#-----------------------------------------------------------------------------------------------
+			## calculate kappa
+			## 1. 
+			actRat = n.nanmean(n.reshape(ccnConc/cpcConc,(-1,300)),axis=1)
 
-			## find the index of Da
 			actDaFunc = lambda _bin_dt, _f_act : n.abs(n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)-_f_act).argmin() 
 			actDaDt   = n.array([ n.nan if n.isnan(f_act) else smpsBinDp[actDaFunc(bin_dt,f_act)]
-								  for bin_dt, f_act in zip(smpsBin_perDy,actRat) ])
+								  for bin_dt, f_act in zip(smpsBin_perDy[::2],actRat[::2]) ])		
+
+
+			#for (ind,bin_dt), act in zip(enumerate(smpsBin_perDy),actRat):
+			#	if not ind%2: continue
+				
+
+
+
+
+			## nCCN/nCN per 5 minutes
+			#actRat = n.nanmean(n.reshape(ccnConc/cpcConc,(-1,300)),axis=1)
+
+
+			## find the index of Da
+			#actDaFunc = lambda _bin_dt, _f_act : n.abs(n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)-_f_act).argmin() 
+			#actDaDt   = n.array([ n.nan if n.isnan(f_act) else smpsBinDp[actDaFunc(bin_dt,f_act)]
+			#					  for bin_dt, f_act in zip(smpsBin_perDy[::2],actRat[::2]) ])
 			
 			kappaData 	= {'smps_time' : smpsTm,
 						   'perS_time' : cpc['Time'],
@@ -373,7 +453,7 @@ class reader:
 
 		return mdfy_data_mesr
 
-
+# calibration output
 class calibration:
 	def __init__(self,data,date,**kwarg):
 		## set calculating parameter
@@ -521,6 +601,7 @@ class calibration:
 		fig.savefig(pth(self.figPath,default['fig_name']))
 		pl.close()
 
+# measurement output
 class measurement:
 	def __init__(self,data,start,final,**kwarg):
 		## set calculating parameter
