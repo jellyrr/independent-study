@@ -16,6 +16,7 @@
 # 20200417 main_v1.4 : mdfy_data_mesr : kappa calculate complete | measurement kappa calculate function building
 # 20200420 main_v1.5 : mdfy_data_mesr : calculate Da before output data | measurement : kappa calculated data split building
 # 20200511 main_v1.6 : mdfy_data_mesr : rebuilding calculate kappa function (not yet)
+# 20200511 re_v1	 : correct_time_data : rebuilding | kappa calculate start 
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -73,36 +74,45 @@ class reader:
 			## deal with blank line data and unfortunate header
 			## skip it
 			cur_tm = _data_[_par['tmIndx']]
-			chkDtmOb = dtm.strptime(cur_tm,'%X') ## if cur_tm is not datetime object, it will error
+			chkDtmOb = dtm.strptime(cur_tm,'%X') ## if cur_tm is not datetime string format, it will error
 		except:
 			return tm_start, _begin_
-
+		
 		err_tm, del_tm = _par['errTm'], _par['delTm']
 		cort_tm_now = lambda time: dtm.strftime(time,'%X')
-		cort_tm_low = lambda time: dtm.strftime(time-err_tm,'%X')
-		cort_tm_upr = lambda time: dtm.strftime(time+err_tm,'%X')
+		cort_tm_low = lambda time, err: dtm.strftime(time-err,'%X')
+		cort_tm_upr = lambda time, err: dtm.strftime(time+err,'%X')
+		tm_logi = lambda _tm, err: ((cur_tm != cort_tm_low(_tm,err))&(cur_tm != cort_tm_now(_tm)))
 
 		## (start time different = 1) test
 		if (td1_start&_begin_):
-			_begin_ = False					## skip the start test
-			_fout_.append(nan_dt(tm_start)) ## add nan to current time data
-			tm_start += del_tm				## change to the time which has first data
-
+			td1_data = cur_tm == cort_tm_now(tm_start+dtmdt(seconds=1.))
+			if td1_data:
+				_begin_ = False					## skip the start test
+				_fout_.append(nan_dt(tm_start)) ## add nan to current time data
+				tm_start += del_tm				## change to the time which has first data
+		
 		## start test
 		if _begin_:
-			_begin_ = True if cur_tm != cort_tm_now(tm_start) else False
+			_begin_ = True if tm_logi(tm_start,_par['stErrTm']) else False
 			if _begin_: return tm_start, _begin_
 
+		# print(tm_logi)
+		print(tm_start)
+		print(cur_tm)	
+		input()
 		## wrong current time test
 		## check out data time series by current time +/- error time
-		if ((cur_tm == cort_tm_low(tm_start))|(cur_tm == cort_tm_upr(tm_start))):
+		if ((cur_tm == cort_tm_low(tm_start,err_tm))|(cur_tm == cort_tm_upr(tm_start,err_tm))):
 			cur_tm = dtm.strftime(tm_start,'%X')
 
 		## discountinue data test
-		while ((cur_tm != cort_tm_low(tm_start))&(cur_tm != cort_tm_upr(tm_start))&(cur_tm != cort_tm_now(tm_start))):
+		while tm_logi(tm_start,err_tm):
 			_fout_.append(nan_dt(tm_start)) ## add nan data to discontinue time
 			tm_start += del_tm
-			if tm_start>=self.final: return None, _begin_
+			print(tm_start)
+			print(cur_tm)
+			if tm_start>self.final: return None, _begin_
 
 		## data colllect
 		_data_[_par['tmIndx']] = tm_start
@@ -134,12 +144,13 @@ class reader:
 
 				## collect data from start time, and make nan array for discontinue data
 				## [2] is current time index
-				par = { 'nanDt'  : lambda _tmStart: n.array([n.nan]*2+[_tmStart]+[n.nan]*len(header[3::])),
-						'dtSplt' : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
-						'delTm'  : dtmdt(minutes=5.),
-						'errTm'  : dtmdt(seconds=1.),
-						'hdrLn'	 : len(header),
-						'tmIndx' : 2 }
+				par = { 'nanDt'   : lambda _tmStart: n.array([n.nan]*2+[_tmStart]+[n.nan]*len(header[3::])),
+						'dtSplt'  : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
+						'delTm'   : dtmdt(minutes=5.),
+						'errTm'   : dtmdt(seconds=1.),
+						'stErrTm' : dtmdt(seconds=1.),
+						'hdrLn'	  : len(header),
+						'tmIndx'  : 2 }
 
 				for line in f:
 					## time check out and collect data
@@ -170,12 +181,13 @@ class reader:
 
 				## collect data from start time, and make nan array for discontinue data
 				## [2] is current time index
-				par = { 'nanDt'  : lambda _tmStart: n.array([n.nan]*2+[_tmStart]+[n.nan]*len(header[3::])),
-						'dtSplt' : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
-						'delTm'  : dtmdt(minutes=5.),
-						'errTm'  : dtmdt(seconds=1.),
-						'hdrLn'	 : len(header),
-						'tmIndx' : 2 }
+				par = { 'nanDt'   : lambda _tmStart: n.array([n.nan]*2+[_tmStart]+[n.nan]*len(header[3::])),
+						'dtSplt'  : lambda _li: n.array(_li[:-1].split('\t'),dtype=object),
+						'delTm'   : dtmdt(minutes=5.),
+						'errTm'   : dtmdt(seconds=1.),
+						'stErrTm' : dtmdt(seconds=1.),
+						'hdrLn'	  : len(header),
+						'tmIndx'  : 2 }
 
 				for line in f:
 					## time check out and collect data
@@ -207,12 +219,13 @@ class reader:
 				## collect data from start time, and make nan array for discontinue data
 				## [0] is current time
 
-				par = { 'nanDt'  : lambda _tmStart: n.array([_tmStart]+['nan']*len(header[1::])),
-						'dtSplt' : lambda _li: n.array(_li[:-1].split(','),dtype=object),
-						'delTm'  : dtmdt(seconds=1.),
-						'errTm'  : dtmdt(seconds=1.),
-						'hdrLn'	 : len(header),
-						'tmIndx' : 0 }
+				par = { 'nanDt'   : lambda _tmStart: n.array([_tmStart]+['nan']*len(header[1::])),
+						'dtSplt'  : lambda _li: n.array(_li[:-1].split(','),dtype=object),
+						'delTm'   : dtmdt(seconds=1.),
+						'errTm'   : dtmdt(seconds=1.),
+						'stErrTm' : dtmdt(seconds=0.),
+						'hdrLn'	  : len(header),
+						'tmIndx'  : 0 }
 
 				for line in f:
 					## time check out and collect data
@@ -262,12 +275,13 @@ class reader:
 
 				## collect data from start time, and make nan array for discontinue data
 				## [0] is current time
-				par = { 'nanDt'  : lambda _tmStart: n.array([_tmStart]+['nan']*len(header[1::])),
-						'dtSplt' : lambda _li: n.array(_li[:-1].split(',')[:-1],dtype=object),
-						'delTm'  : dtmdt(seconds=1.),
-						'errTm'  : dtmdt(seconds=1.),
-						'hdrLn'	 : len(header),
-						'tmIndx' : 0 }
+				par = { 'nanDt'   : lambda _tmStart: n.array([_tmStart]+['nan']*len(header[1::])),
+						'dtSplt'  : lambda _li: n.array(_li[:-1].split(',')[:-1],dtype=object),
+						'delTm'   : dtmdt(seconds=1.),
+						'errTm'   : dtmdt(seconds=1.),
+						'stErrTm' : dtmdt(seconds=0.),
+						'hdrLn'	  : len(header),
+						'tmIndx'  : 0 }
 
 				for line in f:
 					## check out time and collect data
@@ -418,19 +432,17 @@ class reader:
 #-----------------------------------------------------------------------------------------------
 			## calculate kappa
 			## 1. 
-			actRat = n.nanmean(n.reshape(ccnConc/cpcConc,(-1,300)),axis=1)
+			actRat = n.nanmean(n.reshape(ccnConc[:-1]/cpcConc[:-1],(-1,300)),axis=1)
+			print(ccnConc)
+			print(cpc['Time'][n.isnan(cpcConc)])
 
-			actDaFunc = lambda _bin_dt, _f_act : n.abs(n.array(list(accu(_bin_dt[::-1])))[::-1]/n.sum(_bin_dt)-_f_act).argmin() 
-			actDaDt   = n.array([ n.nan if n.isnan(f_act) else smpsBinDp[actDaFunc(bin_dt,f_act)]
+			actDaFunc = lambda _bin_dt, _f_act : n.abs(n.array(list(accu(_bin_dt[::-1])))[::-1]/_bin_dt.sum()-_f_act).argmin()
+			actDaDt   = n.array([ smpsBinDp[actDaFunc(bin_dt,f_act)] if not n.isnan(f_act) else n.nan
 								  for bin_dt, f_act in zip(smpsBin_perDy[::2],actRat[::2]) ])		
 
 
 			#for (ind,bin_dt), act in zip(enumerate(smpsBin_perDy),actRat):
 			#	if not ind%2: continue
-				
-
-
-
 
 			## nCCN/nCN per 5 minutes
 			#actRat = n.nanmean(n.reshape(ccnConc/cpcConc,(-1,300)),axis=1)
