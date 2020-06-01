@@ -17,6 +17,9 @@
 # 20200420 main_v1.5 : mdfy_data_mesr : calculate Da before output data | measurement : kappa calculated data split building
 # 20200511 main_v1.6 : mdfy_data_mesr : rebuilding calculate kappa function (not yet)
 # 20200525 re_v1	 : correct_time_data : rebuilding | kappa calculate finish | output data finish | figure xticklabels at 1200 | approximation of kappa
+# 20200525 main_v1.7 : merge with re complete
+# 20200601 main_v1.8 : add outDt at mdfy_data_calib
+# 20200601 re_v1	 : rewrite the file reading by package panda
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -388,8 +391,8 @@ class reader:
 				else:
 					smps = self.smps_raw()
 					smpsBinDp = n.array(list(smps.keys())[8:115])
-				smpsBin_perDy = n.array([ smps[key] for key in smpsBinDp ],dtype=float).T[1::]
-				smpsTm  = smps[list(smps.keys())[2]][2::2]
+				smpsBin_perDy = n.array([ smps[key] for key in smpsBinDp ],dtype=float).T[1::] ## without first data
+				smpsTm  = smps[list(smps.keys())[2]][2::2] ## every 10 min
 				smpsBinDp = smpsBinDp.astype(float)
 			
 			## get cpc data, if cpc_data = False, get raw data
@@ -424,7 +427,7 @@ class reader:
 			## calculate kappa
 			cpcConc[ccnConc>cpcConc] = n.nan
 			actRat 	   = n.nanmean(n.reshape(ccnConc[:-1]/cpcConc[:-1],(-1,300)),axis=1)
-			ssPer10min = n.nanmean(ccnSS[:-1].reshape(-1,300),axis=1)[1::2]
+			ssPer10min = n.nanmean(ccnSS[:-1].reshape(-1,300),axis=1)[1::2] ## without last data and every 10 min
 			if calib_SS_date is not None:
 				with hpFile('output.hdf5','r') as f:
 					dset = f['test/Calibration']
@@ -436,7 +439,6 @@ class reader:
 			## accumulate bins data and normalize to 1, then compare with activative ratio, get the miniumum index
 			## normalize bins data with miniumum index divide into activative ratio then multiply 
 			## original smps bin diameter with miniumum index to get real activative diameter
-			## (ccn/cpc) / (accumulate bin [min]) * (smps bin [min])
 			def actDaFunc(_bin_dt,_f_act):
 				## nan test
 				if (n.isnan(_bin_dt).all()|n.isnan(_f_act)): return n.nan
@@ -464,7 +466,7 @@ class reader:
 
 			## primitive function
 			## calculate critical S
-			dEq  = lambda _da : 10**n.arange(n.log10(_da)+.0001,2.64,.0001) ## nm
+			dEq  = lambda _da : 10**n.arange(n.log10(_da),4.+.0001,.0001) ## nm
 			criS = lambda _da, _kappa : n.max(((dEq(_da)**3.-_da**3)/(dEq(_da)**3.-_da**3+_kappa*_da**3))*n.exp(coeA/dEq(_da)))
 
 			## kappa approximation
@@ -490,14 +492,11 @@ class reader:
 			
 			## primitive
 			kappaPer10min[limit] = n.array([ _k for _k in map(kappaApprox,ssPer10min[limit],actDaDt[limit]) ])
-			
+
 			kappaData = {'data_time'  : smpsTm,
 						 'time' 	  : cpc['Time'],
 						 'act_dia'    : actDaDt,
-						 # 'simp_kappa' : simpKappaPer10min,
-						 # 'kappa' : simpKappaPer10min,
 						 'kappa'	  : kappaPer10min,
-						 # 'pri_kappa'  : primKappaPer10min,
 						 'SS'		  : ssPer10min}
 
 		else: kappaData = None
@@ -512,11 +511,9 @@ class reader:
 				print('it is test program, plz change to other key in real')
 				mesr = f['test/Measurement']
 
-				try:
-					dset = mesr.require_group(self.start.strftime('%Y%m%d'))
-					dset.clear()
-				except:
-					input('test')
+				dset = mesr.require_group(self.start.strftime('%Y%m%d'))
+				dset.clear()
+
 				## save data
 				for namDt, procsDt in mdfy_data_mesr.items():
 					_nam = dset.create_group(namDt)
@@ -693,9 +690,9 @@ class calibration:
 
 # measurement output
 class measurement:
-	def __init__(self,start,final,data=None,dtDate=None,useOutput=True,**kwarg):
+	def __init__(self,start,final,data=None,dtDate=None,**kwarg):
 		## set calculating parameter
-		default = {'fig_Path' : './'}
+		default = {'fig_path' : './'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -716,7 +713,7 @@ class measurement:
 			return _tick, _tick_lab
 		
 		## get data
-		if (useOutput&(dtDate is not None)):
+		if dtDate is not None:
 			data = {}
 			with hpFile('output.hdf5','r') as f:
 				for _nam, _dt in f[f'test/Measurement/{dtDate}'].items():
@@ -740,7 +737,7 @@ class measurement:
 		self.fs = 13.
 		self.start = start
 		self.final = final
-		self.figPath = default['fig_Path']
+		self.figPath = default['fig_path']
 
 	## plot smps with date and set log scale data
 	def plot_smps2date(self,plotTogether=None,**kwarg):
@@ -789,7 +786,7 @@ class measurement:
 
 		## single plot
 		if plotTogether is None:
-			cb.ax.set_title('# conc.\n(#/$cm^3$/$\Delta log D_p$)',fontsize=fs-2.)
+			cb.ax.set_title('number conc.\n(#/$cm^3$/$\Delta log D_p$)',fontsize=fs-2.)
 			ax.set_ylabel('Electric modify diameter (nm)',fontsize=fs)
 			ax.set_xlabel(f"Time({self.start.strftime('%Y')})",fontsize=fs)
 			ax.set_xticklabels(xTickLab)
@@ -800,7 +797,7 @@ class measurement:
 
 		## together plot
 		else:
-			ax.set_ylabel('diameter (nm)',fontsize=fs-1.)
+			ax.set_ylabel('Diameter (nm)',fontsize=fs-1.)
 			cb.ax.set_title('number conc.\n(#/$cm^3$/$\Delta log D_p$)',fontsize=fs-3.)
 			ax.set_xticklabels('')
 			ax.set_title(r'SMPS data',fontsize=fs-1.)
@@ -928,8 +925,9 @@ class measurement:
 
 	def plot_together(self,**kwarg):
 		## set plot parameter
-		default = {'splt_hr' : 12,
-				   'order'   : ['smps','cpc','kappa']}
+		default = {'splt_hr'  : 12,
+				   'order'    : ['smps','cpc','kappa'],
+				   'fig_name' : 'mesr_together2date.png'}
 
 		plotFunc = {'smps'  : self.plot_smps2date,
 					'cpc'   : self.plot_cpc2date,
@@ -947,9 +945,7 @@ class measurement:
 		ax.set_xticklabels(xTickLab)
 		fig.suptitle(f"Date from ({self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",fontsize=self.fs+2.,style='italic')
 
-		fig.savefig(pth(self.figPath,'mesr_together2date.png'))
+		fig.savefig(pth(self.figPath,default['fig_name']))
 
-
-# xtick  ylabel  sep together and non
 
 
