@@ -22,6 +22,9 @@
 # 20200601 re_v1	 : rewrite the file reading by package panda
 # 20200614 re_v1.01	 : cpc data reading
 # 20200622 re_v1.02	 : all instrument's data reading | cpc_cor(correct coefficient) manual | plot function completely
+# 20200623 re_v1.03	 : nan value function | splt_hr cahange to figSet | set low_memory to read_csv of cpc_raw 
+# 20200705 re_v1.04	 : read and write hdf5 file(mdfy_data_mesr) | detect path exist or not, then create it | change mesr_data to dataframe and store
+## start : get data
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -34,17 +37,14 @@
 # 2. calibration : S curve, calibration table
 # 3. measurement : cpc2date, smps2date, kappa2date
 
-from os import listdir
-from os.path import join as pth
+from os import listdir, mkdir
+from os.path import join as pth, exists
 import numpy as n
-from scipy.stats import linregress
-from matplotlib.pyplot import subplots, close
 from datetime import datetime as dtm
 from datetime import timedelta as dtmdt
-from h5py import File as hpFile, string_dtype
 import pandas as pd
+from matplotlib.pyplot import subplots, close
 import warnings
-warnings.simplefilter('error')
 warnings.simplefilter('ignore', category=RuntimeWarning)
 
 # file reader
@@ -54,7 +54,13 @@ class reader:
 		default = {'path_ccn'  : 'ccn/',
 				   'path_dma'  : 'dma/',
 				   'path_cpc'  : 'cpc/',
-				   'path_smps' : 'smps/'}
+				   'path_smps' : 'smps/',
+				   'path_output' : './',
+				   'cpc_mesr_tm' : 480,
+				   'cpc_nan' 	 : False,
+				   'smps_nan' 	 : False,
+				   'ccn_nan'	 : False,
+				   'dma_nan'	 : False}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 		default.update(kwarg)
@@ -67,10 +73,18 @@ class reader:
 		self.path_dma   = default['path_dma']
 		self.path_cpc   = default['path_cpc']
 		self.path_smps  = default['path_smps']
+		self.data_prcs	= {'cpc_mesr_tm' : default['cpc_mesr_tm'],
+						   'cpc_nan' 	 : default['cpc_nan'],
+						   'smps_nan' 	 : default['smps_nan'],
+						   'ccn_nan'	 : default['ccn_nan'],
+						   'dma_nan'	 : default['dma_nan']}
+		self.path_output  = default['path_output']
+
 
 	## SMPS
 	## change time every 5 min
 	def smps_raw(self):
+		print(f"\nReading file of SMPS -- {dtm.now().strftime('%m/%d %X')}")
 		fList = []
 	
 		for file in listdir(self.path_smps):
@@ -83,12 +97,19 @@ class reader:
 				fList.append(pd.read_csv(f,delimiter='\t',skiprows=17,parse_dates=[['Date','Start Time']])
 										 .set_index('Date_Start Time').resample('5T').mean())
 
-		return pd.concat(fList).reindex(self.index('5T'))
+		fout = pd.concat(fList).reindex(self.index('5T'))
+
+		if self.data_prcs['smps_nan']:
+			for nanRang in self.data_prcs['smps_nan']:
+				fout.loc[pd.date_range(nanRang[0],nanRang[1],freq='5T')] = n.nan
+
+		return fout
 
 	## SMPS_others
 	## skiprows and key column different
 	## change time every 5 min
 	def smpsOthers_raw(self):
+		print(f"\nReading file of SMPS -- {dtm.now().strftime('%m/%d %X')}")
 		fList = []
 	
 		for file in listdir(self.path_smps):
@@ -101,7 +122,13 @@ class reader:
 				fList.append(pd.read_csv(f,delimiter='\t',skiprows=15,parse_dates=[['Date','Start Time']])
 										 .set_index('Date_Start Time').resample('5T').mean())
 
-		return pd.concat(fList).reindex(self.index('5T'))
+		fout = pd.concat(fList).reindex(self.index('5T'))
+
+		if self.data_prcs['smps_nan']:
+			for nanRang in self.data_prcs['smps_nan']:
+				fout.loc[pd.date_range(nanRang[0],nanRang[1],freq='5T')] = n.nan
+
+		return fout
 
 	## CCNc
 	## name : CCN 100 data %y%m%d%M0000.csv
@@ -109,6 +136,7 @@ class reader:
 	## keys index : '    Time' : 0 (%X)
 	## 				' CCN Number Conc' : 45
 	def ccn_raw(self):
+		print(f"\nReading file of CCN -- {dtm.now().strftime('%m/%d %X')}")
 		fList = []
 	
 		for file in listdir(self.path_ccn):
@@ -120,11 +148,11 @@ class reader:
 	
 			with open(pth(self.path_ccn,file),'r',encoding='utf-8',errors='ignore') as f:
 				"""
-				rawDt		: data, which index is '    Time'
-				stTime 		: first datetime of each file
-				finTime		: end datetime of each file 
-				indx		: make new index for rawDt
-				fList		: all reading file
+				rawDt	 : data, which index is '    Time'
+				stTime	 : first datetime of each file
+				finTime  : end datetime of each file 
+				indx	 : make new index for rawDt
+				fList	 : all reading file
 				"""
 				rawDt = pd.read_csv(f,header=3,index_col=['    Time'])
 	
@@ -132,32 +160,47 @@ class reader:
 									   month=stTime.month)
 				fList.append(rawDt.set_index(pd.date_range(stTime,finTime,freq='s')))
 	
-		return pd.concat(fList).reindex(self.index('s'))
+		fout = pd.concat(fList).reindex(self.index('s'))
+
+		if self.data_prcs['ccn_nan']:
+			for nanRang in self.data_prcs['ccn_nan']:
+				fout.loc[pd.date_range(nanRang[0],nanRang[1],freq='s')] = n.nan
+		fout.loc[fout[' Alarm Code']!=0.,' CCN Number Conc'] = n.nan ## set nan data if alarm code != 0.0
+
+		return fout
 
 	## DMA
 	## change time every second
 	def dma_raw(self):
+		print(f"\nReading file of DMA -- {dtm.now().strftime('%m/%d %X')}")
 		fList = []
 	
 		for file in listdir(self.path_dma):
 			if '.txt' not in file: continue
 			with open(pth(self.path_dma,file),'r',encoding='utf-8',errors='ignore') as f:
 				"""
-				rawDt		: data, which header is named manual
-							('Date','Time','Diameter','SPD')
-				fList		: all reading file
+				rawDt : data, which header is named manual
+						('Date','Time','Diameter','SPD')
+				fList : all reading file
 				"""
 				fList.append(pd.read_csv(f,delimiter='\t',parse_dates=[['Date','Time']],usecols=['Date','Time','Diameter'],
 										 names=['Date','Time','Diameter','SPD'],na_values=['OK'])
 										 .set_index('Date_Time').astype(float).resample('s').mean())
 	
-		return pd.concat(fList).reindex(self.index('s'))
+		fout = pd.concat(fList).reindex(self.index('s'))
+
+		if self.data_prcs['dma_nan']:
+			for nanRang in self.data_prcs['dma_nan']:
+				fout.loc[pd.date_range(nanRang[0],nanRang[1],freq='s')] = n.nan
+
+		return fout
 
 	## CPC
 	## change time every second
 	## each part have 28880 datas for most(8 hrs), and rest for 5 mins (default)
 	## mesr_time = 480 mins (default)
 	def cpc_raw(self,mesr_time=480):
+		print(f"\nReading file of CPC -- {dtm.now().strftime('%m/%d %X')}")
 		fList = []
  
 		for file in listdir(self.path_cpc):
@@ -166,15 +209,15 @@ class reader:
 				"""
 				mesr_time	: time period of each part (minutes)
 				rawDt		: data, which header is named manual
-							('Time','Concentration','Count','Analog 1','Analog 2')
+							  ('Time','Concentration','Count','Analog 1','Analog 2')
 				startDate 	: first date of each file 
 				stTimeIndx  : start time in each part of one file, due to the reason under:
-							time is continue in same file, but is not necessarily same in different file
+							  time is continue in same file, but is not necessarily same in different file
 				indx		: fit index for rawDt
 				fList		: all reading file
 				"""
 				rawDt = pd.read_csv(f,index_col=['Time'],names=['Time','Concentration','Count',
-									'Analog 1','Analog 2'])
+									'Analog 1','Analog 2'],low_memory=False)
 	
 				stDate = rawDt['Concentration']['Start Date']
 				if type(stDate) != str: stDate = stDate[0]
@@ -193,14 +236,20 @@ class reader:
 					indx = indx.append(pd.date_range(_st,_st+dtmdt(minutes=mesr_time),closed='left',freq='s'))
 				fList.append(rawDt.set_index(indx[:len(rawDt)]).astype(float))
 	
-		return pd.concat(fList).reindex(self.index('s'))
+		fout = pd.concat(fList).reindex(self.index('s'))
+
+		if self.data_prcs['cpc_nan']:
+			for nanRang in self.data_prcs['cpc_nan']:
+				fout.loc[pd.date_range(nanRang[0],nanRang[1],freq='s')] = n.nan
+
+		return fout
 
 
 
 	## data for CCNc calibration
 	## use data of CCNc, DMA, CPC, and modified by time
 	def mdfy_data_calib(self):
-		ccn, dma, cpc = self.ccn_raw(), self.dma_raw(), self.cpc_raw()
+		ccn, dma, cpc = self.ccn_raw(), self.dma_raw(), self.cpc_raw(self.data_prcs['cpc_mesr_tm'])
 		time_ccn, SS_ccn = ccn['    Time'], ccn[' Current SS']
 		conc_ccn = ccn[' CCN Number Conc'].astype(float)
 		conc_cpc = cpc['Concentration (#/cm�)'].astype(float)
@@ -230,29 +279,32 @@ class reader:
 			mdfy_data_calib.setdefault(SS_ccn[i],[n.array(diameter),n.array(conc_ccn_ave),n.array(conc_cpc_ave)])
 		return mdfy_data_calib
 
-	def mdfy_data_mesr(self,cpc_cor_slope,cpc_cor_inte,smps_data=True,cpc_data=True,kappa_data=True,
-					   smpsOther_data=False,calib_SS_date=None,outDt=False):
+	def mdfy_data_mesr(self,cpc_cor_slope,smps_data=True,cpc_data=True,kappa_data=True,smpsOther_data=False,
+					   calib_SS_date=None,outDt=False):
 		## smps data
 		if smps_data:
+			print(f"\nProcessing SMPS data -- {dtm.now().strftime('%m/%d %X')}")
 			smps = self.smps_raw()
-			smpsData = {'time' 	   : smps.index,
-						'bins' 	   : n.array(smps.keys()[6:113]).astype(float),
-						'bin_data' : smps[smps.keys()[6:113]]}
+			smpsData = smps[smps.keys()[6:113]] ## data (DataFrame)
+			smpsBin = n.array(smps.keys()[6:113]).astype(float)
+
 		else: smpsData = None
 
-		## smps other data
+		## other smps data
 		if smpsOther_data:
+			print(f"\nProcessing SMPS data -- {dtm.now().strftime('%m/%d %X')}")
 			smps = self.smps_raw()
-			smpsData = {'time' 	   : smps.index,
-						'bins' 	   : n.array(smps.keys()[2:109]).astype(float),
-						'bin_data' : smps[smps.keys()[2:109]]}
+			smpsData = smps[smps.keys()[2:109]]
+			smpsBin = n.array(smps.keys()[2:109]).astype(float)
+
 		elif not smps_data: smpsData = None
 
 		## cpc data
 		if cpc_data:
-			cpc = self.cpc_raw()
-			cpcData = {'time' : cpc.index,
-					   'conc' : (cpc['Concentration']-cpc_cor_inte)/cpc_cor_slope}
+			print(f"\nProcessing CPC data -- {dtm.now().strftime('%m/%d %X')}")
+			cpc = self.cpc_raw(self.data_prcs['cpc_mesr_tm'])
+			cpcData = cpc['Concentration']*cpc_cor_slope ## data (Series)
+					   
 		else: cpcData = None
 
 		## kappa data
@@ -269,6 +321,7 @@ class reader:
 		## use accumulate function to find when is sum(bin data) = real nCCN
 
 		if kappa_data:
+			print(f"\nCalculating kappa -- {dtm.now().strftime('%m/%d %X')}")
 			## get ccn, smps, cpc data and take necessary information
 			## ccn
 			ccn = self.ccn_raw()
@@ -279,27 +332,24 @@ class reader:
 			## first smps bin data could not correspond to activate ratio, neglect it
 			## resample as 10 min
 			try:
-				time	  = smpsData['time'][1::2]
-				smpsBin   = smpsData['bins']
-				smpsBinDt = n.array(smpsData['bin_data'][1:].asfreq('10T'))
+				smpsBinDt = n.array(smpsData[1:].asfreq('10T'))
 			except:
 				if smpsOther_data:
 					smps = self.smpsOthers_raw()
 					smpsBin   = n.array(smps.keys()[2:109]).astype(float)
 					smpsBinDt = n.array(smps[smps.keys()[2:109]][1:].asfreq('10T'))
-					time	  = smps.index[1::2]
 				else:
 					smps = self.smps_raw()
 					smpsBin = n.array(smps.keys()[6:113]).astype(float)
 					smpsBinDt = n.array(smps[smps.keys()[6:113]][1:].asfreq('10T'))
-					time	  = smps.index[1::2]
+			time = smps.index[1::2]
 	
 			## get cpc data, if cpc_data = False, get raw data
 			try:
-				cpcConc = cpcData['conc']
+				cpcConc = cpcData
 			except:
-				cpc = self.cpc_raw()
-				cpcConc = (cpc['Concentration']-cpc_cor_inte)/cpc_cor_slope
+				cpc = self.cpc_raw(self.data_prcs['cpc_mesr_tm'])
+				cpcConc = cpc['Concentration']*cpc_cor_slope
 
 			## due to discountinue bin data, each bin diameter means the average diameter in a range,
 			## then we use accumulate function from large bin Dp to smaller to check out the bin Dp 
@@ -331,15 +381,12 @@ class reader:
 			## last ccn and cpc data could not use(closed='left'), and label should be same as smps data([:-1])
 			## resample to 10 minute
 			actRat = (ccnConc/cpcConc).resample('5T',label='right').mean()[:-1].asfreq('10T')
-			ccnSS  = ccnSS.resample('5T',label='right').median()[:-1].asfreq('10T')
+			ccnSS  = ccnSS.resample('5T',label='right').mean()[:-1].round(1).asfreq('10T')
 
 			if calib_SS_date is not None:
-				with hpFile('output.hdf5','r') as f:
-					dset = f['test/Calibration']
-					calSS = dset[calib_SS_date]
-					for _indSS, _calibSS in zip(calSS['ssSet'],calSS['ssCalib']):
-						ccnSS.replace(_indSS,_calibSS,inplace=True)
-					ssCalib = calSS['ssCalib'][:]
+				calSSdt = n.load(pth('Calibration','calibration_SS',f'calibration_SS_{calib_SS_date}.npy'))
+				for _instrSS, _calibSS in zip(calSSdt[0],calSSdt[1]):
+					ccnSS.replace(_instrSS,_calibSS,inplace=True)
 
 			## calculate activative data
 			## accumulate bins data and normalize to 1, then compare with activative ratio, get the miniumum index
@@ -383,7 +430,7 @@ class reader:
 			def kappaApprox(_ss,_da):
 				if (n.isnan(_ss)|n.isnan(_da)): return n.nan
 				iniKappa = n.arange(.01,1.31,.01) ## a.u.
-			
+
 				## approximation function
 				## precision from .01 -> .001 -> .0001
 				def approxFunc(_precision,kappa_list,output=False):
@@ -403,39 +450,26 @@ class reader:
 			
 			## primitive
 			kappa[limit] = n.array([ _k for _k in map(kappaApprox,ccnSS[limit],actDaDt[limit]) ])
-
-			kappaData = {'time' 	  : time,
-						 'act_dia'    : actDaDt,
-						 'kappa'	  : kappa,
-						 'calSS'	  : ssCalib,
-						 'mesrSS'	  : ccnSS}
+			kappaData = pd.DataFrame({'kappa' : kappa, 'mesrSS' : ccnSS}).set_index(time)
 
 		else: kappaData = None
 
-		mdfy_data_mesr = {'smps'  : smpsData, 
+		mdfy_data_mesr = {'smps'  : smpsData,
 						  'cpc'   : cpcData, 
-						  'kappa' : kappaData}
+						  'kappa' : kappaData,
+						  'SMPS_bins' : pd.Series(smpsBin)}
 
-		## save output data
+		## save output data, use 'w' mode to overwrite
 		if (outDt&smps_data&cpc_data&kappa_data):
-			with hpFile('output.hdf5','r+') as f:
-				print('it is test program, plz change to other key in real')
-				mesr = f['test/Measurement']
-
-				dset = mesr.require_group(self.start.strftime('%Y%m%d'))
-				dset.clear()
-
+			_file = pth(self.path_output,f"output_{self.start.strftime('%Y%m%d')}.hdf5")
+			print(f"\nSaving file : {_file} -- {dtm.now().strftime('%m/%d %X')}")
+			with pd.HDFStore(_file,'w') as f:
 				## save data
-				for namDt, procsDt in mdfy_data_mesr.items():
-					_nam = dset.create_group(namDt)
-
-					for _key, _val in procsDt.items():
-						if 'time' in _key:
-							_dtm = _nam.create_dataset(_key,(len(_val),),dtype=string_dtype())
-							_dtm[:] = _val
-						else:
-							_nam[_key] = _val
-
+				for namDt, data in mdfy_data_mesr.items():
+					data.to_hdf(f,namDt)
+				if calib_SS_date: f['Calibration_SS_Date'] = pd.Series(calib_SS_date) ## save calibration date
+				else: f['Calibration_SS_Date'] = pd.Series('Without calibration SS')
+				
 		return mdfy_data_mesr
 
 # calibration output
@@ -464,6 +498,7 @@ class calibration:
 	## activation of CCN may be like a S curve, there is a very sharp activation changing which variety
 	## by diameter
 	def calib_data(self,SS,get_dc=True,kohler_calib=False):
+		from scipy.stats import linregress
 		d_ = self.data[SS][0] ## diameter
 		activation = (self.data[SS][1]/self.data[SS][2])*100. ## CCN/CPC
 		if get_dc:
@@ -601,9 +636,11 @@ class calibration:
 
 # measurement output
 class measurement:
-	def __init__(self,start,final,data=None,dtDate=None,**kwarg):
+	def __init__(self,start,final,data=None,**kwarg):
 		## set calculating parameter
-		default = {'fig_path' : './'}
+		default = {'fig_path' : pth('./'),
+				   'splt_hr'  : 12,
+				   'path_input_data' : pth('./')}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
 			default.update(kwarg)
@@ -614,24 +651,25 @@ class measurement:
 			_tick = index(f'{split_hr}h')
 			return _tick, _tick.strftime('%m-%d%n%X')
 
+		## detect dir exists or not
+		if not exists(default['fig_path']): mkdir(default['fig_path'])
+
 		## get data
-		if dtDate is not None:
-			data = {}
-			with hpFile('output.hdf5','r') as f:
-				for _nam, _dt in f[f'test/Measurement/{dtDate}'].items():
-					_data = {}
-					for _key, _val in _dt.items():
-						if 'time' in _key:
-							_data.setdefault(_key,_val[:].astype(n.datetime64).astype(dtm))
-						else:
-							_data.setdefault(_key,_val[:])
-					data.setdefault(_nam,_data)
-		elif data is None:
-			raise ValueError("Input data to 'data' variable or 'useOutput = True' then set 'dtDate'")
-		
-		self.smpsData  = data['smps']
-		self.cpcData   = data['cpc']
-		self.kappaData = data['kappa']
+		if data is None:
+			if exists(default['path_input_data']):
+				with pd.HDFStore(default['path_input_data'],'r') as f:
+					print(f"\nLoading file : {default['path_input_data']} -- {dtm.now().strftime('%m/%d %X')}")
+					print(f"Calibration SS : {f['Calibration_SS_Date'][0]}")
+					self.smpsBins  = f['SMPS_bins'].values
+					self.smpsData  = f['smps']
+					self.cpcData   = f['cpc']
+					self.kappaData = f['kappa']
+			else: raise OSError(f"File '{default['path_input_data']}' does not exist !!!")
+		else:
+			self.smpsBins  = data['SMPS_bins'].values
+			self.smpsData  = data['smps']
+			self.cpcData   = data['cpc']
+			self.kappaData = data['kappa']
 
 		## set class parameter
 		self.fs = 13.
@@ -640,12 +678,14 @@ class measurement:
 		self.start = start
 		self.final = final
 		self.figPath = default['fig_path']
+		self.splt_hr = default['splt_hr']
 
 	## plot smps with date and set log scale data
 	def plot_smps2date(self,plotTogether=None,**kwarg):
+		print(f"\nplotting SMPS data -- {dtm.now().strftime('%m/%d %X')}")
 		from matplotlib.colors import LogNorm
 		## set plot parameter
-		default = {'splt_hr'  : 12,
+		default = {'splt_hr'  : self.splt_hr,
 				   'cmap'	  : 'jet',
 				   'fig_name' : r'mesr_smps2date.png'}
 		for key in kwarg:
@@ -658,7 +698,7 @@ class measurement:
 
 		## data set
 		time = self.index('5T')
-		data = smps['bin_data'].reindex(time).T
+		data = smps.reindex(time).T
 		data.replace(0.,1e-5,inplace=True)
 		data.replace(n.nan,0.,inplace=True)
 
@@ -672,7 +712,7 @@ class measurement:
 			fig, ax = plotTogether
 
 		## plot data and necessary setting
-		pm = ax.pcolormesh(time,smps['bins'],data,cmap=default['cmap'],norm=LogNorm(vmin=10**.5,vmax=10**5.3))
+		pm = ax.pcolormesh(time,self.smpsBins,data,cmap=default['cmap'],norm=LogNorm(vmin=10**.5,vmax=10**5.3))
 
 		box = ax.get_position()
 		ax.set_position([box.x0,box.y0+0.02,box.width,box.height])
@@ -708,8 +748,9 @@ class measurement:
 
 	## plot cpc with date
 	def plot_cpc2date(self,plotTogether=None,**kwarg):
+		print(f"\nplotting CPC data -- {dtm.now().strftime('%m/%d %X')}")
 		## set plot parameter
-		default = {'splt_hr'  : 12,
+		default = {'splt_hr'  : self.splt_hr,
 				   'fig_name' : r'mesr_cpc2date.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
@@ -721,7 +762,7 @@ class measurement:
 
 		## data set
 		time = self.index('s')
-		data = cpc['conc'].reindex(time)/1e3
+		data = cpc.reindex(time)/1e3
 
 		xTick, xTickLab = self.ticks(default['splt_hr'])
 		fs = self.fs
@@ -759,8 +800,9 @@ class measurement:
 
 	## plot cpc with date
 	def plot_kappa2date(self,plotTogether=None,**kwarg):
+		print(f"\nplotting Kappa data -- {dtm.now().strftime('%m/%d %X')}")
 		## set plot parameter
-		default = {'splt_hr'  : 12,
+		default = {'splt_hr'  : self.splt_hr,
 				   'fig_name' : r'mesr_kappa2date.png'}
 		for key in kwarg:
 			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
@@ -770,14 +812,14 @@ class measurement:
 		if self.kappaData is not None: kappa = self.kappaData 
 		else: raise ValueError('Kappa data is None !!!')
 
-		time = self.index('5T')
-		data = kappa['kappa'].reindex(time)
-		ss   = kappa['mesrSS'].reindex(time)
+		## data set
+		time  = self.index('5T')
+		data = kappa['kappa'].reindex(time).groupby(kappa['mesrSS'])
 
 		xTick, xTickLab = self.ticks(default['splt_hr'])
 		fs = self.fs
 
-		color = ['#7617FF','#FF4924','#0A82FF','#efe934','#17FFA4','#FF9C2F']
+		color = ['#7617FF','#FF4924','#0A82FF','#efe934','#17FFA4','#FF9C2F','#e699ff','#000000']
 		
 		## plot
 		if plotTogether is None:
@@ -786,13 +828,13 @@ class measurement:
 			fig, ax = plotTogether
 		collectArt = []
 		## plot data and necessary setting
-		for _ss, _colr in zip(kappa['calSS'],color):
-			artist, = ax.plot(time[ss==_ss],data[ss==_ss],mec=_colr,ls='',ms=5.,
-							  mfc='#ffffff',mew=2.,marker='o',label=round(_ss,3))
+		for (_ss, _kappa), _colr in zip(data,color):
+			artist, = ax.plot(_kappa,mec=_colr,ls='',ms=5.,mfc='#ffffff',mew=2.,marker='o',label=round(_ss,3))
 			collectArt.append(artist)
 
 		ax.tick_params(which='major',direction='in',length=7,right=True,labelsize=fs-2.5)
-		ax.set(ylim=(-.05,1.),xticks=xTick,xlim=(xTick[0],xTick[-1]))
+		ax.set(xticks=xTick,xlim=(xTick[0],xTick[-1]))
+		ax.set_ylim(bottom=-.02)
 
 		ax.set_ylabel(r'$\kappa$ (a.u.)',fontsize=fs)
 
@@ -821,8 +863,9 @@ class measurement:
 			return xTickLab
 
 	def plot_together(self,**kwarg):
+		print(f"\nplotting CPC, SMPS, Kappa data -- {dtm.now().strftime('%m/%d %X')}")
 		## set plot parameter
-		default = {'splt_hr'  : 12,
+		default = {'splt_hr'  : self.splt_hr,
 				   'order'    : ['smps','cpc','kappa'],
 				   'fig_name' : 'mesr_together2date.png'}
 
