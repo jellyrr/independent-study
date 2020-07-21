@@ -24,7 +24,9 @@
 # 20200622 re_v1.02	 : all instrument's data reading | cpc_cor(correct coefficient) manual | plot function completely
 # 20200623 re_v1.03	 : nan value function | splt_hr cahange to figSet | set low_memory to read_csv of cpc_raw 
 # 20200705 re_v1.04	 : read and write hdf5 file(mdfy_data_mesr) | detect path exist or not, then create it | change mesr_data to dataframe and store
-# 20200706 main_v1.9 : merge from re | calibration rewrite | mdfy_data_calib | save calibration data in hdf5
+# 20200711 main_v1.9 : merge from re | calibration rewrite | mdfy_data_calib | save calibration data in hdf5
+# 20200711 main_v2.0 : mdfy_data_calib : ccn=cpc where ccn>cpc, calculating activation reaplace mean by max | cpc_raw : input parameter mesr_time remove, then use self parameter
+# 20200716 main_v2.1 : mdfy_data_calib, mdfy_data_mesr : add new storage parameter and calculate activation after mean | build new class : raw_data 
 
 # target : make a CCNc exclusive func with python 3.6
 # 0. read file with discontinue data : CCNc, SMPS, CPC, DMS
@@ -203,9 +205,10 @@ class reader:
 	## change time every second
 	## each part have 28880 datas for most(8 hrs), and rest for 5 mins (default)
 	## mesr_time = 480 mins (default)
-	def cpc_raw(self,mesr_time=480):
+	def cpc_raw(self):
 		print(f"\n	{dtm.now().strftime('%m/%d %X')} : Reading file of CPC")
 		fList = []
+		mesr_time = self.data_prcs['cpc_mesr_tm']
  
 		for file in listdir(self.path_cpc):
 			if '.csv' not in file: continue
@@ -265,22 +268,21 @@ class reader:
 			default.update(kwarg)
 		
 		## read file
-		ccn, dma, cpc = self.ccn_raw(), self.dma_raw(), self.cpc_raw(self.data_prcs['cpc_mesr_tm'])
+		ccn, dma, cpc = self.ccn_raw(), self.dma_raw(), self.cpc_raw()
 		
 		## set data
-		SS, ccnConc = ccn[' Current SS'], ccn[' CCN Number Conc']
-		cpcConc		= cpc['Concentration']
-		diam		= dma['Diameter']
+		SS, ccnConc = ccn[' Current SS'].copy(), ccn[' CCN Number Conc'].copy()
+		cpcConc	    = cpc['Concentration'].copy()
+		diam		= dma['Diameter'].copy()
+
 		## activation
-		wrongDt = ccnConc>cpcConc
-		cpcConc[wrongDt], ccnConc[wrongDt] = n.nan, n.nan
-		actRat = ccnConc/cpcConc
+		# ccnConc, cpcConc = rawCcnConc.copy(), rawCpcConc.copy()
+		# wrongDt = ccnConc>cpcConc
+		# ccnConc[wrongDt] = cpcConc[wrongDt]
+		# actRat = ccnConc/cpcConc
 		
 		## loop parameter
 		stTimeArr = pd.date_range(self.start,self.final,freq='30T',closed='left')
-		deltaTm   = lambda _s : dtmdt(seconds=_s)
-		stSkipTm  = dtmdt(seconds=270)
-		prcsPeri  = dtmdt(seconds=90)
 		
 		## store parameter
 		calSS = pd.DataFrame()
@@ -295,7 +297,7 @@ class reader:
 		## <           30 mins           > 	   	   	 <   2 mins  >
 		## stable(st), unstable(uns), diameter change(ch)
 		## 30min = 1800s, 4min 30s = 270s, 4min 90s = 330s, 2min = 120s
-		## (30-4)/2 = 13 different diameter		
+		## (30-4)/2 = 13 different diameter
 		## class the data with dma data
 		for stTime in stTimeArr:
 			## parameter
@@ -304,8 +306,13 @@ class reader:
 			actList = []
 		
 			for changSt in pd.date_range(stTime+dtmdt(seconds=270),stTime+dtmdt(seconds=1799),freq='2T'):
+				## mean dianmeter
 				diaList.append(diam[changSt:changSt+dtmdt(seconds=90)].mean())
-				actList.append(actRat[changSt:changSt+dtmdt(seconds=90)].mean()*100.)
+
+				## mean activation and mean number conc
+				meanCcnConc = ccnConc[changSt:changSt+dtmdt(seconds=90)].mean()
+				meanCpcConc = cpcConc[changSt:changSt+dtmdt(seconds=90)].mean()
+				actList.append(meanCcnConc/meanCpcConc*100.)
 		
 			## put in DataFrame
 			actTable[_SS], diaTable[_SS] = actList, diaList
@@ -324,10 +331,12 @@ class reader:
 
 		## data saving
 		mdfy_data_calib = {'calib_SS'	: pd.Series(calSS.tolist()).sort_values(),
+						   'instr_SS'   : pd.Series(SSList).sort_values(),
+						   'act_dia'    : pd.DataFrame(actDia).set_index(pd.Index(SSList)).T,
 						   'activation' : actTable,
 						   'diameter'   : diaTable,
-						   'act_dia'    : pd.DataFrame(actDia).set_index(pd.Index(SSList)).T,
-						   'instr_SS_list' : pd.Series(SSList).sort_values()}
+						   'raw'  		: pd.DataFrame({'ccn' : ccnConc, 'cpc' : cpcConc, 'dma' : diam})}
+						   # 'ccn_cpc_coe' : pd.Series(actTable[actTable>80.].mean().mean()/100.)}
 
 		## save output data, use 'w' mode to overwrite
 		if outDt:
@@ -340,8 +349,8 @@ class reader:
 
 		return mdfy_data_calib
 
-	def mdfy_data_mesr(self,cpc_cor_slope,smps_data=True,cpc_data=True,kappa_data=True,smpsOther_data=False,
-					   calib_SS_date=None,outDt=False):
+	def mdfy_data_mesr(self,cpc_cor_slope=1.,ccn_cor_slope=1.,smps_data=True,cpc_data=True,
+					   kappa_data=True,smpsOther_data=False,calib_SS_date=None,outDt=False):
 		print('\n'+'-'*50)
 		print(f"{dtm.now().strftime('%m/%d %X')} : Modify measurement data")
 		print('-'*50)
@@ -366,8 +375,9 @@ class reader:
 		## cpc data
 		if cpc_data:
 			print(f"\n{dtm.now().strftime('%m/%d %X')} : Processing CPC data")
-			cpc = self.cpc_raw(self.data_prcs['cpc_mesr_tm'])
-			cpcData = cpc['Concentration']*cpc_cor_slope ## data (Series)
+			cpc = self.cpc_raw()
+			rawCpcData = cpc['Concentration'].copy()
+			cpcData = rawCpcData/cpc_cor_slope ## data (Series)
 					   
 		else: cpcData = None
 
@@ -389,8 +399,9 @@ class reader:
 			## get ccn, smps, cpc data and take necessary information
 			## ccn
 			ccn = self.ccn_raw()
-			ccnConc = ccn[' CCN Number Conc']
-			ccnSS	= ccn[' Current SS']
+			rawCcnData = ccn[' CCN Number Conc'].copy()
+			ccnConc = rawCcnData/ccn_cor_slope
+			ccnSS	= ccn[' Current SS'].copy()
 
 			## get smps data, if smps_data = False, get raw data
 			## first smps bin data could not correspond to activate ratio, neglect it
@@ -410,10 +421,11 @@ class reader:
 	
 			## get cpc data, if cpc_data = False, get raw data
 			try:
-				cpcConc = cpcData
+				cpcConc = cpcData.copy()
 			except:
-				cpc = self.cpc_raw(self.data_prcs['cpc_mesr_tm'])
-				cpcConc = cpc['Concentration']*cpc_cor_slope
+				cpc = self.cpc_raw()
+				rawCpcData = cpc['Concentration'].copy()
+				cpcConc = rawCpcData/cpc_cor_slope ## data (Series)
 
 			## due to discountinue bin data, each bin diameter means the average diameter in a range,
 			## then we use accumulate function from large bin Dp to smaller to check out the bin Dp 
@@ -438,20 +450,21 @@ class reader:
 			## <     us    ><     st    >
 
 			## calculate kappa
-			wrongDt = ccnConc>cpcConc
-			cpcConc[wrongDt] = n.nan
-			ccnConc[wrongDt] = n.nan
+			# wrongDt = ccnConc>cpcConc
+			# ccnConc[wrongDt] = cpcConc[wrongDt]
 
 			## last ccn and cpc data could not use(closed='left'), and label should be same as smps data([:-1])
 			## resample to 10 minute
-			actRat = (ccnConc/cpcConc).resample('5T',label='right').mean()[:-1].asfreq('10T')
+			meanCcn = ccnConc.resample('5T',label='right').mean()[:-1].asfreq('10T')
+			meanCpc = cpcConc.resample('5T',label='right').mean()[:-1].asfreq('10T')
+			actRat  = meanCcn/meanCpc
 			ccnSS  = ccnSS.resample('5T',label='right').mean()[:-1].round(1).asfreq('10T')
 
 			if calib_SS_date is not None:
 				print(f"\n	{dtm.now().strftime('%m/%d %X')} : Use calibration SS")
 				calSSfile = pth('calibration',f'{calib_SS_date}',f'calibration_{calib_SS_date}.hdf5')
 				calibSS = pd.read_hdf(calSSfile,'calib_SS').values
-				instrSS = pd.read_hdf(calSSfile,'instr_SS_list').values.round(1)
+				instrSS = pd.read_hdf(calSSfile,'instr_SS').values.round(1)
 
 				for _instrSS, _calibSS in zip(instrSS,calibSS):
 					ccnSS.replace(_instrSS,_calibSS,inplace=True)
@@ -461,25 +474,17 @@ class reader:
 			## normalize bins data with miniumum index divide into activative ratio then multiply 
 			## original smps bin diameter with miniumum index to get real activative diameter
 			print(f"\n	{dtm.now().strftime('%m/%d %X')} : Calculating activate diameter")
+			from scipy.interpolate import interp1d
 			def actDaFunc(_bin_dt,_f_act):
 				## nan test
 				if (n.isnan(_bin_dt).all()|n.isnan(_f_act)): return n.nan
-				"""
-				smpsBin   : smps bin value, out of this function
-				_accu_bin : reversed accumulate bins data
-				_act_indx : index of activate diameter
-				"""
-
 				_accu_bin = n.add.accumulate(_bin_dt[::-1])[::-1]/_bin_dt.sum()
-				_act_indx = n.abs(_accu_bin-_f_act).argmin()
-
-				try:
-					if _accu_bin[_act_indx]>_f_act:
-						return n.poly1d(n.polyfit(_accu_bin[_act_indx:_act_indx+2],smpsBin[_act_indx:_act_indx+2],1))(_f_act)
-					else:
-						return n.poly1d(n.polyfit(_accu_bin[_act_indx-1:_act_indx+1],smpsBin[_act_indx-1:_act_indx+1],1))(_f_act)
-				except:
-					return _accu_bin[_act_indx]
+			
+				## inter function
+				func = interp1d(smpsBin,_accu_bin,kind='cubic')
+				interX = n.logspace(n.log10(smpsBin[0]),n.log10(smpsBin[-1]),5000)[5:-5]
+			
+				return interX[(func(interX)-_f_act).__abs__().argmin()]
 
 			actDaDt = n.array([ actDaFunc(bin_dt,f_act) for bin_dt, f_act in zip(smpsBinDt,actRat) ])
 			actDaDt[(actDaDt<smpsBin[0])|(actDaDt>smpsBin[-1])] = n.nan
@@ -527,6 +532,7 @@ class reader:
 		mdfy_data_mesr = {'smps'  : smpsData,
 						  'cpc'   : cpcData, 
 						  'kappa' : kappaData,
+						  'raw'   : pd.DataFrame({'cpc' : rawCpcData, 'ccn' : rawCcnData, 'act' : actRat*100.}),
 						  'SMPS_bins' : pd.Series(smpsBin)}
 
 		## save output data, use 'w' mode to overwrite
@@ -539,7 +545,7 @@ class reader:
 					data.to_hdf(f,namDt)
 				if calib_SS_date: f['Calibration_SS_Date'] = pd.Series(calib_SS_date) ## save calibration date
 				else: f['Calibration_SS_Date'] = pd.Series('Without calibration SS')
-				
+
 		return mdfy_data_mesr
 
 # calibration output
@@ -563,18 +569,20 @@ class calibration:
 				with pd.HDFStore(default['path_input_data'],'r') as f:
 					print(f"\n{dtm.now().strftime('%m/%d %X')} : Loading file -- {default['path_input_data']}")
 					self.calibSS = f['calib_SS']
-					self.instrSS = f['instr_SS_list']
+					self.instrSS = f['instr_SS']
 					self.actDia  = f['act_dia']
 					self.diam	 = f['diameter']
 					self.activ	 = f['activation']
+					self.raw	 = f['raw']
 
 			else: raise OSError(f"File '{default['path_input_data']}' does not exist !!!")
 		else:
 			self.calibSS = data['calib_SS']
-			self.instrSS = data['instr_SS_list']
+			self.instrSS = data['instr_SS']
 			self.actDia  = data['act_dia']
 			self.diam	 = data['diameter']
 			self.activ	 = data['activation']
+			self.raw	 = data['raw']
 
 		## set class parameter
 		self.fs = 13.
@@ -585,7 +593,7 @@ class calibration:
 		print(f"{dtm.now().strftime('%m/%d %X')}")
 
 	## plot S curve to find out criticle diameter
-	def plot_Scurve(self,plot_dc=False,**kwarg):
+	def plot_Scurve(self,**kwarg):
 		print(f"\n{dtm.now().strftime('%m/%d %X')} : Plotting S curve")
 		## set plotting parameter
 		default = {'color'	  	: '#b8dbff',
@@ -709,12 +717,14 @@ class measurement:
 					self.smpsData  = f['smps']
 					self.cpcData   = f['cpc']
 					self.kappaData = f['kappa']
+					self.rawData   = f['raw']
 			else: raise OSError(f"File '{default['path_input_data']}' does not exist !!!")
 		else:
 			self.smpsBins  = data['SMPS_bins'].values
 			self.smpsData  = data['smps']
 			self.cpcData   = data['cpc']
 			self.kappaData = data['kappa']
+			self.rawData   = data['raw']
 
 		## set class parameter
 		self.fs = 13.
@@ -934,6 +944,173 @@ class measurement:
 		fig.suptitle(f"Date from ({self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",fontsize=self.fs+2.,style='italic')
 
 		fig.savefig(pth(self.figPath,default['fig_name']))
+
+class raw_data:
+	def __init__(self,start,final,data=None,**kwarg):
+		print('\n'+'='*50)
+		print(f"Plot raw data")
+		## set calculating parameter
+		default = {'fig_path' : pth('./'),
+				   'splt_hr'  : 12,
+				   'path_input_data' : pth('measurement',f"{start.strftime('%Y%m%d')}",
+										   f"output_{start.strftime('%Y%m%d')}.hdf5")}
+		for key in kwarg:
+			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
+			default.update(kwarg)
+
+		## func
+		index = lambda _freq: pd.date_range(start,final,freq=_freq)
+		def ticks(split_hr):
+			_tick = index(f'{split_hr}h')
+			return _tick, _tick.strftime('%m-%d%n%X')
+
+		## detect dir exists or not
+		if not exists(default['fig_path']): mkdir(default['fig_path'])
+
+		## get data
+		if data is None:
+			if exists(default['path_input_data']):
+				with pd.HDFStore(default['path_input_data'],'r') as f:
+					print(f"\n{dtm.now().strftime('%m/%d %X')} : Loading file -- {default['path_input_data']}")
+					self.rawData = f['raw']
+			else: raise OSError(f"File '{default['path_input_data']}' does not exist !!!")
+		else:
+			self.rawData = data['raw']
+
+		## set class parameter
+		self.fs = 13.
+		self.ticks = ticks
+		self.index = index
+		self.start = start
+		self.final = final
+		self.figPath = default['fig_path']
+		self.splt_hr = default['splt_hr']
+		print(f" from {start.strftime('%Y-%m-%d %X')} to {final.strftime('%Y-%m-%d %X')}")
+		print('='*50)
+		print(f"{dtm.now().strftime('%m/%d %X')}")
+
+	def plot_raw(self,plot_act=True,**kwarg):
+		print(f"\n{dtm.now().strftime('%m/%d %X')} : Plotting CPC, CCN, time series and satter")
+		default = {'splt_hr'  : self.splt_hr,
+				   'fig_name_scatter'  : 'raw_scatter.png',
+				   'fig_name_tmSeries' : 'raw_tmSeries.png'}
+
+		for key in kwarg:
+			if key not in default.keys(): raise TypeError("got an unexpected keyword argument '"+key+"'")
+			default.update(kwarg)
+
+		## data set
+		time = self.index('s')
+		rawCcn = self.rawData['ccn'].reindex(time)
+		rawCpc = self.rawData['cpc'].reindex(time)
+
+		xTick, xTickLab = self.ticks(default['splt_hr'])
+		fs = self.fs
+		
+		## plot
+		## time series
+		print(f"\n	{dtm.now().strftime('%m/%d %X')} : plot time series")
+		fig, ax = subplots(figsize=(10,6),dpi=150.)
+
+		l1, = ax.plot(rawCcn,c='#ffb973',label='CCN',lw=1.2)
+		l2, = ax.plot(rawCpc,c='#5982ff',label='CPC',lw=1.2)
+		artist = [l1,l2]
+
+		ax.tick_params(which='major',direction='in',length=7,labelsize=fs-2.5)
+		[ ax.spines[axis].set_visible(False) for axis in ['right','top'] ]
+
+		ax.set_xlabel(f"Time({self.start.strftime('%Y')})",fontsize=fs)
+		ax.set_ylabel(r'Number Concentration (#$/cm^3$)',fontsize=fs)
+
+		if plot_act:
+			try:
+				act = self.rawData['act'].dropna()
+
+				axt = ax.twinx()
+				axt.set(xlim=ax.get_xlim(),ylim=(-50.,105.))
+
+				l3, = axt.plot(act.index,act,c='#686859',label='activation',lw=1.5,ls='--',marker=',')
+				artist.append(l3)
+
+				axt.set(xlim=ax.get_xlim(),ylim=(-50.,105.))
+
+				yTick = axt.get_yticks()
+				axt.set_yticks(yTick[(yTick>=0.)&(yTick<=110.)])
+				axt.set_xticks(xTick)
+
+				axt.set_ylabel(r'Activation (%)',fontsize=fs)
+			except:
+				print('	no activation data in raw data')
+
+		ax.set_xticks(xTick)
+		ax.set_xticklabels(xTickLab)
+		ax.legend(handles=artist,framealpha=0,fontsize=fs-2.)
+
+		fig.suptitle(f"Time series of CPC and CCN from ({self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",
+					 fontsize=fs+2.,style='italic')
+		fig.savefig(pth(self.figPath,default['fig_name_tmSeries']))
+		close()
+
+		## scatter
+		print(f"\n	{dtm.now().strftime('%m/%d %X')} : plot scatter")
+		fig, ax = subplots(figsize=(8,6),dpi=150.)
+		
+		ax.scatter(rawCcn,rawCpc,ec='#26c9ff',s=35,facecolor='#ffffff')
+		
+		ax.tick_params(which='major',direction='in',length=7,labelsize=fs-2.5)
+		[ ax.spines[axis].set_visible(False) for axis in ['right','top'] ]
+		
+		
+		ax.set_xlabel('CCN (#/$cm^3$)',fontsize=fs)
+		ax.set_ylabel('CPC(ver. 2.1.2) (#/$cm^3$) ',fontsize=fs)
+		
+		# ax.legend(framealpha=0,fontsize=fs-2.)
+		#ax.legend(handles=[],framealpha=0,fontsize=fs-2.)
+
+		fig.suptitle(f"Scatter of CCN and CPC \nfrom {self.start.strftime('%Y/%m/%d %X')}) to ({self.final.strftime('%Y/%m/%d %X')})",fontsize=fs+2.,style='italic')
+		fig.savefig(pth(self.figPath,default['fig_name_scatter']))
+		# show()
+		close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
